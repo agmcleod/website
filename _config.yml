@@ -31,6 +31,9 @@ twitter_username: agmcleod
 theme: jekyll-text-theme
 plugins:
   - jekyll-feed
+
+text_skin: default
+highlight_theme: default
 # Exclude from processing.
 # The following items will not be processed, by default.
 # Any item listed under the `exclude:` key here will be automatically added to
