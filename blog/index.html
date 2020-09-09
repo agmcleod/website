@@ -10,13 +10,17 @@ exclude: true
 </ul>
 
 <div class="pagination">
-  {% if paginator.previous_page %}
-  <a href="{{ paginator.previous_page_path }}" class="previous"> Previous </a>
-  {% endif %}
+  {% if paginator.previous_page %} {% if paginator.page == 2 %}
+  <a href="/blog/index.html" class="previous"> Previous </a>
+  {% else %}
+  <a href="{{ paginator.previous_page_path }}/index.html" class="previous">
+    Previous
+  </a>
+  {% endif %} {% endif %}
   <span class="page_number">
     Page: {{ paginator.page }} of {{ paginator.total_pages }}
   </span>
   {% if paginator.next_page %}
-  <a href="{{ paginator.next_page_path }}" class="next">Next</a>
+  <a href="{{ paginator.next_page_path }}/index.html" class="next">Next</a>
   {% endif %}
 </div>

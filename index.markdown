@@ -16,5 +16,5 @@ My name is Aaron McLeod. I presently live & work in Canada as a Software Enginee
 </ul>
 
 <h3>
-  <a href="/blog">See all posts</a>
+  <a href="/blog/index.html">See all posts</a>
 </h3>
