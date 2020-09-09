@@ -2,9 +2,19 @@
 # Feel free to add content and custom Front Matter to this file.
 # To modify the layout, see https://jekyllrb.com/docs/themes/#overriding-theme-defaults
 
-layout: home
+layout: default
 ---
 
-This is the personal website of Aaron McLeod, a software engineer in Toronto.
-  I work full stack on web apps, as well as build mobile apps with react native.
-  In my free time I explore game development.
+My name is Aaron McLeod. I presently live & work in Canada as a Software Engineer. I work on web & mobile applications, while also exploring game development & rust in my spare time.
+
+<h2 class="post-list-heading">Recent posts</h2>
+
+<ul class="post-list">
+  {%- for post in site.posts limit:5 -%}
+    {% include post-item.html %}
+  {%- endfor -%}
+</ul>
+
+<h3>
+  <a href="/blog">See all posts</a>
+</h3>
