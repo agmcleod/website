@@ -18,7 +18,7 @@ First off here is the current version of the full server for my application: [ht
 
 Secondly I want to give a huge shout out to this repository here: [https://github.com/ddimaria/rust-actix-example](https://github.com/ddimaria/rust-actix-example), which was instrumental in helping me figure out some of the authentication pieces, as well as error handling.
 
-For building this application, I'm using docker for running the database, and then compiling & running the rust code on my host machine. If you use Linux, you can use docker to run the rust code. On windows & mac, I found the compilation time was about 20 times slower. Building in docker would take minutes, where as outside of docker it was more like 10 seconds.
+For building this application, I'm using docker for running the database, and then compiling & running the rust code on my host machine. If you use Linux, you can use docker to run the rust code. On windows & mac, I found the compilation time was about 20 times slower. Building in docker would take minutes, where as outside of docker it was more like 10 seconds. However if you run the application on your host machine, you will need postgres development tools installed on your machine.
 
 If you wish to do the same, setup a docker.compose.yml file like so:
 
@@ -51,21 +51,12 @@ docker-compose stop
 
 The postgres base image for docker creates the database for us, so we should be good to go.
 
-For the application server, we will split it into a few crates. Let's create some folders for these crates.
-
-```bash
-mkdir auth
-mkdir db
-mkdir errors
-mkdir server
-```
-
-Create a file called `Cargo.toml`, and let's populate it with our workspace information.
+For the application server, we will split it into a few crates. Create a file called `Cargo.toml`, and let's populate it with our workspace information.
 
 ```
 [workspace]
 
-members = ["auth", "db", "errors", "server"]
+members = ["server"]
 ```
 
 You can read more about [Cargo workspaces here](https://doc.rust-lang.org/book/ch14-03-cargo-workspaces.html), but the idea is that we're stating a set of related binaries or libraries together. I do wish one could define a set of shared dependencies between them, but ah well!
@@ -108,6 +99,7 @@ use std::env;
 use actix_cors::Cors;
 use actix_rt;
 use actix_web::{http, middleware::Logger, web, App, HttpResponse, HttpServer};
+use dotenv::dotenv;
 use env_logger;
 
 #[actix_rt::main]
@@ -130,10 +122,6 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(Logger::default())
             .wrap(Logger::new("%a %{User-Agent}i"))
-            .default_service(
-                web::route()
-                    .to(|| HttpResponse::NotFound().json::<ErrorResponse>("Not Found".into())),
-            )
     })
     .bind("0.0.0.0:8080")?
     .run()
@@ -149,11 +137,37 @@ SHELL := /bin/bash
 db_url := postgres://postgres:abc123@localhost:5434/sc_predictions
 
 run_server:
-  CLIENT_HOST=http://localhost:3000 \
-    RUST_BACKTRACE=full \
-    cargo run --bin server
+	CLIENT_HOST=http://localhost:3000 \
+		RUST_BACKTRACE=full \
+		cargo run --bin server
 
 .PHONY: run_server
 ```
 
-So now when we run `make run_server`, it will run with the variables we need. I snuck in a `RUST_BACKTRACE` so we can follow error stacks more easily. With that setup, we continue going over main(). We construct the web server, passing a number of services to it. First we allow CORS for our frontend's host only, and limit the headers allowed. Then we create the application server in a mostly barebones way. We added the logging, and a default handler, but no routes or middleware yet. Then start the server on port 8080.
+So now when we run `make run_server`, it will run with the variables we need. I snuck in a `RUST_BACKTRACE` so we can follow error stacks more easily. With that setup, we continue going over main().
+
+```rust
+ HttpServer::new(move || {
+    let cors = Cors::default()
+        .allowed_origin(&env::var("CLIENT_HOST").unwrap())
+        .allow_any_method()
+        .allowed_headers(vec![
+            http::header::AUTHORIZATION,
+            http::header::ACCEPT,
+            http::header::CONTENT_TYPE,
+        ])
+        .max_age(3600);
+
+    App::new()
+        .wrap(cors)
+        .wrap(Logger::default())
+        .wrap(Logger::new("%a %{User-Agent}i"))
+})
+.bind("0.0.0.0:8080")?
+.run()
+.await
+```
+
+We construct the web server, passing a number of services to it. First we allow CORS for our frontend's host only, and limit the headers allowed. Then we create the application server, setting up the logging, but no routes or middleware yet. Finally the server is started on port 8080.
+
+Running `make run_server` should now compile and run the actix web server. It'll take sometime to compile and build all the dependencies for the first go. Once done, open a brower and visit [http://localhost:8080](http://localhost:8080) to verify it. You should see a blank page, and a 404 http response.
