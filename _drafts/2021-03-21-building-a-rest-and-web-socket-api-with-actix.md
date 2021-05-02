@@ -172,6 +172,8 @@ We construct the web server, passing a number of services to it. First we allow 
 
 Running `make run_server` should now compile and run the actix web server. It'll take sometime to compile and build all the dependencies for the first go. Once done, open a brower and visit [http://localhost:8080](http://localhost:8080) to verify it. You should see a blank page, and a 404 http response.
 
+## Getting all questions
+
 Now we need to start building out a GET endpoint that returns our list of questions.
 
 Create our db crate:
@@ -656,7 +658,7 @@ test:
 
 Once the container is up and running, run `make test_prepare` to run the migrations, and then you can run `make test` to run your tests anytime. I like to use the truncate command to ensure a clear database, but up to you. It's a good idea to ensure any data you create in your tests are cleaned up once that test case finishes. Otherwise you can pollute your other tests.
 
-If all goes well, this should be your output
+If all goes well, you should see something like this for your output. With 1 test passing for the server target.
 
 ```
     Finished test [unoptimized + debuginfo] target(s) in 50.88s
@@ -680,4 +682,289 @@ running 0 tests
 test result: ok. 0
 ```
 
-Now let's create some data.
+## Making errors better
+
+I noted earlier that getting a database connection, and calling an immediate unwrap() is not great. In most cases this may be fine, but what if the connection fails for some reason? It would cause the rust application to panic, and therefore stop running. Also as you grow your application you may want to manually return different error codes and types. We're going to create our own Error type & handling so we can support these use cases.
+
+Create a new crate:
+
+```bash
+cargo new --lib errors
+```
+
+Add it to the Cargo workspace
+
+```
+members = ["db", "errors", "server"]
+```
+
+Then open `errors/Cargo.toml` and add the dependencies we need.
+
+```
+[dependencies]
+actix-web = "3.2"
+derive_more = "0.99.9"
+diesel = { version = "1.4.4", features = ["postgres", "r2d2", "uuid", "chrono"] }
+env_logger = "0.5.13"
+log = "0.4.0"
+r2d2 = "0.8.2"
+serde = "1.0.80"
+serde_json = "1.0.13"
+```
+
+A similar set to our other crates, using actix-web, diesel & r2d2 for the database, logging support, and serde. This is so we can handle errors from these different external data types. Again I really want to thank `ddimaria` on github, who has a similar setup in the repo I listed at the top of the post.
+
+Open up `errors/src/lib.rs`. You can delete the default test, and start adding the following.
+
+```rust
+#[macro_use]
+extern crate log;
+
+use actix_web::{
+    error::{BlockingError, ResponseError},
+    Error as ActixError, HttpResponse,
+};
+use derive_more::Display;
+use diesel::result::{DatabaseErrorKind, Error as DBError};
+use r2d2::Error as PoolError;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Display, PartialEq)]
+pub enum Error {
+    BadRequest(String),
+    InternalServerError(String),
+    Unauthorized,
+    Forbidden,
+    NotFound(String),
+    PoolError(String),
+    BlockingError(String),
+}
+```
+
+We have our usual use statements to pull in dependents, but also we setup our Error enum. I've added all the types we're looking to specifically bubble up. You can add more types, like in my own application I have UnprocessableEntity for returning specific validation errors. Such as when joining a lobby, and the username is already taken for that lobby. What I like about this is the usage of Rust enums. We can define some of them to carry an error message, along with it being NotFound, or PoolError.
+
+For our enum we want it to respond as an actix_web ResponseError, so implement it:
+
+```rust
+impl ResponseError for Error {
+    fn error_response(&self) -> HttpResponse {
+        match self {
+            Error::BadRequest(error) => {
+                HttpResponse::BadRequest().json::<ErrorResponse>(error.into())
+            }
+            Error::NotFound(message) => {
+                HttpResponse::NotFound().json::<ErrorResponse>(message.into())
+            }
+            Error::Forbidden => HttpResponse::Forbidden().json::<ErrorResponse>("Forbidden".into()),
+            _ => {
+                error!("Internal server error: {:?}", self);
+                HttpResponse::InternalServerError()
+                    .json::<ErrorResponse>("Internal Server Error".into())
+            }
+        }
+    }
+}
+```
+
+Again this is fairly flexible, in the end we just want to return an HttpResponse of somekind. For the 40x error codes, we're handling them more deliberately, and anything else is treated as a 500. In this case logging the details, and just returning a generic error to the API. If you build this code, you will see an error.
+
+```
+cannot find type `ErrorResponse` in this scope
+not found in this scope
+```
+
+For those 40x status codes, we are passing a custom data type to dictate the JSON structure, however we haven't defined it yet, let's do it now.
+
+```rust
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ErrorResponse {
+    pub errors: Vec<String>,
+}
+```
+
+We need it to Serialize & Deserialize via serde, otherwise it's pretty simple. Just contains an array of error messages that will be returned to the client.
+
+Then, we will add the From trait for some types, so the into() ErrorResponse will work. This is done by implementing the From trait for `&str`, `String`, and `Vec<String>` types.
+
+```rust
+impl From<&str> for ErrorResponse {
+    fn from(error: &str) -> Self {
+        ErrorResponse {
+            errors: vec![error.into()],
+        }
+    }
+}
+
+impl From<&String> for ErrorResponse {
+    fn from(error: &String) -> Self {
+        ErrorResponse {
+            errors: vec![error.into()],
+        }
+    }
+}
+
+impl From<Vec<String>> for ErrorResponse {
+    fn from(error: Vec<String>) -> Self {
+        ErrorResponse { errors: error }
+    }
+}
+```
+
+Given we get Result types containing types defined in other crates, we will want to wrap those in our own Error. As our error type will be used in the routing handlers as well as other places. Again let's apply the From trait, using external error types, and apply this to our Error.
+
+```rust
+// Convert DBErrors to our Error type
+impl From<DBError> for Error {
+    fn from(error: DBError) -> Error {
+        // Right now we just care about UniqueViolation from diesel
+        // But this would be helpful to easily map errors as our app grows
+        match error {
+            DBError::DatabaseError(kind, info) => {
+                if let DatabaseErrorKind::UniqueViolation = kind {
+                    let message = info.details().unwrap_or_else(|| info.message()).to_string();
+                    return Error::BadRequest(message);
+                }
+                Error::InternalServerError("Unknown database error".into())
+            }
+            DBError::NotFound => Error::NotFound("Record not found".into()),
+            _ => Error::InternalServerError("Unknown database error".into()),
+        }
+    }
+}
+
+// Convert PoolError to our Error type
+impl From<PoolError> for Error {
+    fn from(error: PoolError) -> Error {
+        Error::PoolError(error.to_string())
+    }
+}
+
+impl From<BlockingError<Error>> for Error {
+    fn from(error: BlockingError<Error>) -> Error {
+        match error {
+            BlockingError::Error(error) => error,
+            BlockingError::Canceled => Error::BlockingError("Thread blocking error".into()),
+        }
+    }
+}
+
+impl From<ActixError> for Error {
+    fn from(error: ActixError) -> Error {
+        Error::InternalServerError(error.to_string())
+    }
+}
+```
+
+The code for each error type is converting it into one of our enum types.
+
+With that ready, let's integrate it into our application. Add the dependency to both our server & db crates.
+
+```
+# Cargo.toml
+[dependencies]
+errors = { path = "../errors" }
+```
+
+Open up `db/src/models/question.rs`, and update the return error type in our get_all.
+
+```rust
+use errors::Error;
+
+impl Question {
+    pub fn get_all(conn: &PgConnection) -> Result<Vec<Question>, Error> {
+        use crate::schema::questions::dsl::{body, questions};
+
+        let all_questions = questions.order(body).load::<Question>(conn)?;
+
+        Ok(all_questions)
+    }
+}
+```
+
+Because we're using the ? operator, the From trait conversion is doing most of the lifting for us. Open `server/src/routes/questions/get_all.rs` and change the error type there too.
+
+```rust
+// remove errors::Error from actix_web use
+use actix_web::{
+    web::{block, Data, Json},
+    Result,
+};
+
+use errors::Error;
+```
+
+This doesn't clean up the use of unwrap(), so let's address that. Open up `db/src/lib.rs`, updating dependencies & get_conn as follows.
+
+```rust
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate diesel;
+
+pub mod models;
+pub mod schema;
+
+use std::env;
+
+use diesel::pg::PgConnection;
+use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
+use r2d2::Error;
+
+pub type PgPool = Pool<ConnectionManager<PgConnection>>;
+
+pub fn get_conn(pool: &PgPool) -> Result<PooledConnection<ConnectionManager<PgConnection>>, Error> {
+    pool.get().map_err(|err| {
+        error!("Failed to get connection - {}", err.to_string());
+        err.into()
+    })
+}
+```
+
+We add the `macro_use` for log, so we can note when a db connection fails. We're still returning a external crate type error here, but we already handle pool errors in the errors crate. With this change we mainly want to log the error, and then bubble it up.
+
+Making this change will cause some compiler errors, so let's open up get_all.rs and fix them. Update the get_conn() calls to use the ? operator at the end in the get_all function.
+
+```rust
+pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
+    let connection = get_conn(&pool)?;
+    // etc
+```
+
+Then in the test, call unwrap(). Our tests dont know how to handle the result type, and having a panic fail a test is okay.
+
+```rust
+#[actix_rt::test]
+async fn test_get_all_returns_questions() {
+    let pool = new_pool();
+    let conn = get_conn(&pool).unwrap();
+    // etc
+```
+
+Now run `make test` to be sure we didn't cause any regressions.
+
+```
+running 1 test
+test routes::questions::get_all::tests::test_get_all_returns_questions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+Yay! Now let's allow the API consumer to create some questions.
+
+## Create endpoint
+
+Let's add a create endpoint that allows the caller to create a new question. First thing is to add a create method to our question model. Open up `db/src/models/question.rb`
+
+```bash
+touch server/src/routes/questions/create.rs
+```
+
+Update the questions module
+
+```rust
+// server/src/routes/questions/mod.rs
+mod create;
+pub use self::create::*;
+```
+
+
