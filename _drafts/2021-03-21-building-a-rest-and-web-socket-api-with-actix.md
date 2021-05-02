@@ -98,7 +98,7 @@ use std::env;
 
 use actix_cors::Cors;
 use actix_rt;
-use actix_web::{http, middleware::Logger, web, App, HttpResponse, HttpServer};
+use actix_web::{http, middleware::Logger, App, HttpServer};
 use dotenv::dotenv;
 use env_logger;
 
@@ -291,7 +291,14 @@ pub mod schema;
 
 use std::env;
 
+use diesel::pg::PgConnection;
+use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
+
 pub type PgPool = Pool<ConnectionManager<PgConnection>>;
+
+pub fn get_conn(pool: &PgPool) -> PooledConnection<ConnectionManager<PgConnection>> {
+    pool.get().unwrap()
+}
 
 pub fn new_pool() -> PgPool {
     // again using our environment variable
@@ -302,8 +309,11 @@ pub fn new_pool() -> PgPool {
         .build(manager)
         .expect("failed to create db pool")
 }
-
 ```
+
+For getting a connection, calling unwrap() right away isn't the greatest option, but we'll improve it later.
+
+We define a re-usable type `PgPool` so we don't need to import those types in each of our route handlers. From there the new_pool() function uses the environment variable to establish a connection manager, and creates an r2d2 pool for managing connections.
 
 Open `db/src/models/mod.rs` to define the question module.
 
@@ -340,7 +350,7 @@ pub struct Question {
 
 An important thing to note, the fields here in the struct need to match the order they are defined in the schema.rs file. This will also match the order they were defined in the migration file. So if you were to remove `body` and add it back in a new migration, you would need to move `body` in the struct to the bottom. Probably the one thing that annoys me about diesel, but I realize given the trickyness of making this work, there's not an easy answer.
 
-Next add a function to Question struct to get us all the records. First update `db/src/lib.rs` by adding a macro_use. This is so we can pull data out of schema module.
+Next add a function to Question struct to get us all the records. First update `db/src/lib.rs` by adding a macro_use. This is so we can pull data out of schema module. Diesel will automatically load the schema.rs file, and this allows it to have the macros used in that file defined in our project scope.
 
 ```rust
 // db/src/lib.rs
@@ -349,6 +359,7 @@ extern crate diesel;
 ```
 
 Then open question.rs again
+
 ```rust
 // Update the use list from before
 use diesel::{PgConnection, QueryDsl, Queryable, RunQueryDsl};
@@ -364,7 +375,7 @@ impl Question {
 }
 ```
 
-The code here pulls in the dsl for querying the questions table, and the body field so we can sort by it. Using the ? operator to immediately return a diesel error if one ocurred. Wrapping the `Vec<Question>` in an Ok result.
+The code here pulls in the dsl for querying the questions table, and the body field so we can sort by it. Using the ? operator to immediately return a diesel error if one ocurred. When things go well, we wrap the `Vec<Question>` in an Ok result.
 
 Okay, so let's setup a route now to return questions. First add our db crate to the server's Cargo.toml
 
@@ -380,7 +391,7 @@ touch server/src/routes/questions/mod.rs
 touch server/src/routes/questions/get_all.rs
 ```
 
-Whew so many files! But I like to keep them separate so we don't crowd our route files code & tess.
+Whew so many files! You can put everything in routes/mod.rs if you like, but I prefer to keep them separate so we don't crowd our route files.
 
 Add our module definitions
 
@@ -401,6 +412,7 @@ pub mod questions;
 
 mod get_all;
 
+// re-export everything under get_all to be part of questions
 pub use self::get_all::*;
 ```
 
@@ -422,7 +434,7 @@ use actix_web::{
 use db::{models::Question, PgPool};
 
 pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
-    let connection = pool.get().unwrap();
+    let connection = get_conn(&pool);
 
     let questions = block(move || Question::get_all(&connection)).await?;
 
@@ -430,7 +442,7 @@ pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
 }
 ```
 
-Bringing together everything we've setup so far. Leverages the Question model with its ability to convert into JSON, pulling data out of the db, and returning as JSON. Using a generic actix error type. The reason for block() is so that the database operation, which is blocking functionality, happens on a separate thread. block returns a future, so we can call .await? on it to wait for it to be complete before returning a response.
+This brings together everything we've setup so far. It uses the Question model to get all records. Since we applied serde Serialize to the Question model, it can be easily converted into JSON. For our error type here we are just using the generic actix error type. The reason for block() is so that the database operation, which is IO blocking functionality, happens on a separate thread. block returns a future meaning we can use `await` to wait for it to complete before returning a response. Creating an Ok result, and wrapping as a Json will return our array of data as JSON through the API.
 
 Create a routing config by opening `server/src/routes/mod.rs`, and add to it:
 
@@ -461,3 +473,211 @@ App::new()
     .data(pool.clone())         // <---- the news line here
     .configure(routes::routes)  // <----
 ```
+
+Now that we have all these bits & pieces together, let's write some tests. Create a new file at `server/src/tests.rs`, so we can define some test helpers.
+
+First setup a mod & our dependencies. We add the cfg(test) attribute so this module is only compiled in tests.
+
+```rust
+// server/src/main.rs
+#[cfg(test)]
+mod tests;
+```
+
+```rust
+// server/src/tests.rs
+use actix_http::Request;
+use actix_service::Service;
+use actix_web::{body::Body, dev::ServiceResponse, error::Error, test, App};
+use serde::de::DeserializeOwned;
+```
+
+These dependencies will be used for two functions. One to create the service to use for a single request, another to call our get request.
+
+```rust
+pub async fn get_service(
+) -> impl Service<Request = Request, Response = ServiceResponse<Body>, Error = Error> {
+    test::init_service(App::new().data(db::new_pool()).configure(routes)).await
+}
+```
+
+`init_service` returns an instance of the Service trait, which requires for us to define a number of generic types. So for this we pull in a number of types from Actix that implement those traits. This function uses the init_service to create a new instance of the App with our routes.
+
+Now add the following to the module:
+
+```rust
+pub async fn test_get<R>(route: &str) -> (u16, R)
+where
+    R: DeserializeOwned,
+{
+    let mut app = get_service().await;
+    let mut req = test::TestRequest::get().uri(route);
+    let res = test::call_service(&mut app, req.to_request()).await;
+
+    let status = res.status().as_u16();
+    let body = test::read_body(res).await;
+    let json_body = serde_json::from_slice(&body).unwrap_or_else(|_| {
+        panic!(
+            "read_response_json failed during deserialization. response: {} status: {}",
+            String::from_utf8(body.to_vec())
+                .unwrap_or_else(|_| "Could not convert Bytes -> String".to_string()),
+            status
+        )
+    });
+
+    (status, json_body)
+}
+```
+
+This uses the get_service to create the application service, and then creates our get request. To execute it, we then call the `call_service` function, which accepts our app & route to process the request against. The idea is that this runs the app only for a single request.
+
+After that we get the http status code, as well as the response body. This is assuming that we only get json responses back, but does have some error handling using a panic to force a test failure if deserialization goes wrong.
+
+You'll have a couple compiler errors as we'll need to add serde to the server/Cargo.toml file. While you're there, add diesel as we'll need it for the tests.
+
+```
+diesel = { version = "1.4.4", features = ["postgres", "r2d2", "uuid", "chrono"] }
+serde = "1.0.80"
+serde_json = "1.0.13"
+```
+
+
+With that setup open up `get_all.rs`, and add the following to the bottom.
+
+```rust
+mod tests{
+    use diesel::RunQueryDsl;
+
+    use db::{
+        get_conn,
+        models::{Question},
+        new_pool,
+        schema::{questions}
+    };
+
+    use crate::tests;
+
+    #[actix_rt::test]
+    async fn test_get_all_returns_questions() {
+        let pool = new_pool();
+        let conn = get_conn(&pool);
+
+        diesel::insert_into(questions::table).values(Question {
+            body: "one question".to_string(),
+        })
+        .execute(&conn).unwrap();
+    }
+}
+```
+
+Okay, hmm. So when doing this we can't omit fields like ID and record timestamps, as the struct requires them. The values function accepts a number of ways to pass data, but I do like using a typed struct. So let's create a new one in our db crate. Open up `db/src/models/question.rs`
+
+```rust
+// add Insertiable
+use diesel::{PgConnection, Insertable, QueryDsl, Queryable, RunQueryDsl};
+
+#[derive(Debug, Insertable)]
+#[table_name = "questions"]
+pub struct NewQuestion {
+    pub body: String,
+}
+```
+
+We need to add the table_name attribute in this case, cause the type does not match our table name here.
+
+Now back in our test.
+
+```rust
+#[cfg(test)]
+mod tests{
+    use diesel::RunQueryDsl;
+
+    use db::{
+        get_conn,
+        models::{Question, NewQuestion},
+        new_pool,
+        schema::{questions}
+    };
+
+    use crate::tests;
+
+    #[actix_rt::test]
+    async fn test_get_all_returns_questions() {
+        let pool = new_pool();
+        let conn = get_conn(&pool);
+
+        diesel::insert_into(questions::table).values(NewQuestion {
+            body: "one question".to_string(),
+        })
+        .execute(&conn).unwrap();
+
+        let res: (u16, Vec<Question>) = tests::test_get("/api/questions").await;
+        assert_eq!(res.0, 200);
+        assert_eq!(res.1.len(), 1);
+        assert_eq!(res.1[0].body, "one question");
+    }
+}
+```
+
+We create a question using our fancy new struct, and then get the status + resulting array from our endpoint.
+
+For running the tests, I created a separate docker-compose file, and then added new commands to the Makefile.
+
+```yaml
+// docker-compose.test.yml
+version: "3"
+
+services:
+  database_test:
+    image: "postgres:10.5"
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: ""
+      POSTGRES_DB: my_database_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+```
+
+Start up the test docker postgres container: `docker-compose -f docker-compose.test.yml up -d` then add some commands to your Makefile.
+
+```Makefile
+test_prepare:
+	DATABASE_URL=postgres://root@localhost:5433/my_database_test diesel migration run --migration-dir=db/migrations
+
+test:
+	docker-compose -f docker-compose.test.yml exec database_test psql -d my_database_test --c="TRUNCATE questions"
+	DATABASE_URL=postgres://root@localhost:5433/my_database_test \
+		cargo test $(T) -- --nocapture --test-threads=1
+
+# Update the phony line:
+.PHONY: run_server test test_prepare
+```
+
+Once the container is up and running, run `make test_prepare` to run the migrations, and then you can run `make test` to run your tests anytime. I like to use the truncate command to ensure a clear database, but up to you. It's a good idea to ensure any data you create in your tests are cleaned up once that test case finishes. Otherwise you can pollute your other tests.
+
+If all goes well, this should be your output
+
+```
+    Finished test [unoptimized + debuginfo] target(s) in 50.88s
+     Running target\debug\deps\db-ad00c7968215382d.exe
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+     Running target\debug\deps\server-578da7493e677323.exe
+
+running 1 test
+test routes::questions::get_all::tests::test_get_all_returns_questions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests db
+
+running 0 tests
+
+test result: ok. 0
+```
+
+Now let's create some data.
