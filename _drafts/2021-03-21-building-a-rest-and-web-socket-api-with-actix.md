@@ -283,11 +283,26 @@ touch db/src/models/mod.rs
 touch db/src/models/question.rs
 ```
 
-Open `db/src/lib.rs` and initialize the modules we will be creating:
+Open `db/src/lib.rs` and initialize the modules we will be creating, as well as setup a type for our pool:
 
 ```rust
 pub mod models;
 pub mod schema;
+
+use std::env;
+
+pub type PgPool = Pool<ConnectionManager<PgConnection>>;
+
+pub fn new_pool() -> PgPool {
+    // again using our environment variable
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
+
+    Pool::builder()
+        .build(manager)
+        .expect("failed to create db pool")
+}
+
 ```
 
 Open `db/src/models/mod.rs` to define the question module.
@@ -325,7 +340,37 @@ pub struct Question {
 
 An important thing to note, the fields here in the struct need to match the order they are defined in the schema.rs file. This will also match the order they were defined in the migration file. So if you were to remove `body` and add it back in a new migration, you would need to move `body` in the struct to the bottom. Probably the one thing that annoys me about diesel, but I realize given the trickyness of making this work, there's not an easy answer.
 
-Okay, so let's setup a route now to return questions.
+Next add a function to Question struct to get us all the records. First update `db/src/lib.rs` by adding a macro_use. This is so we can pull data out of schema module.
+
+```rust
+// db/src/lib.rs
+#[macro_use]
+extern crate diesel;
+```
+
+Then open question.rs again
+```rust
+// Update the use list from before
+use diesel::{PgConnection, QueryDsl, Queryable, RunQueryDsl};
+
+impl Question {
+    pub fn get_all(conn: &PgConnection) -> Result<Vec<Question>, diesel::result::Error> {
+        use crate::schema::questions::dsl::{body, questions};
+
+        let all_questions = questions.order(body).load::<Question>(conn)?;
+
+        Ok(all_questions)
+    }
+}
+```
+
+The code here pulls in the dsl for querying the questions table, and the body field so we can sort by it. Using the ? operator to immediately return a diesel error if one ocurred. Wrapping the `Vec<Question>` in an Ok result.
+
+Okay, so let's setup a route now to return questions. First add our db crate to the server's Cargo.toml
+
+```
+db = { path = "../db" }
+```
 
 ```
 mkdir -p server/src/routes/
@@ -362,10 +407,57 @@ pub use self::get_all::*;
 Now let's make a module for our get all endpoint.
 
 ```bash
-touch server/src/routes/
+touch server/src/routes/queestions/get_all.rs
 ```
 
-Open questions.rs and let's create a route to return all questions in the database.
+Open get_all.rs and let's create a route to return all questions in the database.
 
 ```rust
+use actix_web::{
+    error::Error,
+    web::{block, Data, Json},
+    Result,
+};
+
+use db::{models::Question, PgPool};
+
+pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
+    let connection = pool.get().unwrap();
+
+    let questions = block(move || Question::get_all(&connection)).await?;
+
+    Ok(Json(questions))
+}
+```
+
+Bringing together everything we've setup so far. Leverages the Question model with its ability to convert into JSON, pulling data out of the db, and returning as JSON. Using a generic actix error type. The reason for block() is so that the database operation, which is blocking functionality, happens on a separate thread. block returns a future, so we can call .await? on it to wait for it to be complete before returning a response.
+
+Create a routing config by opening `server/src/routes/mod.rs`, and add to it:
+
+```rust
+use actix_web::web;
+
+pub fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api")
+            .service(web::scope("/questions").route("", web::get().to(questions::get_all))),
+    );
+}
+```
+
+In this function we'll be able to add all sorts of routes to it. This sets up a top level /api with no default, and then a /questions underneath it. We specify our get_all as a GET request.
+
+Open our server/src/main.rs file, attach the routes to the App, and add a database pool.
+
+```rust
+// at the top of main()
+let pool = db::new_pool();
+
+// inside HttpServer::new block
+App::new()
+    .wrap(cors)
+    .wrap(Logger::default())
+    .wrap(Logger::new("%a %{User-Agent}i"))
+    .data(pool.clone())         // <---- the news line here
+    .configure(routes::routes)  // <----
 ```
