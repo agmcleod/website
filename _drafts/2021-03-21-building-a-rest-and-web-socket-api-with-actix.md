@@ -20,7 +20,7 @@ Secondly I've written this in such a way that the code doesn't always contain th
 
 ## Let's get into the setup
 
-First off here is the current version of the full server for my application: [https://github.com/agmcleod/sc-predictions-server]. It is not open source, but I'm happy for folks to use it a reference in their own projects and hobbies.
+First off here is the current version of the full server for my application: [https://github.com/agmcleod/sc-predictions-server](https://github.com/agmcleod/sc-predictions-server). It is not open source, but I'm happy for folks to use it a reference in their own projects and hobbies.
 
 Secondly I want to give a huge shout out to this repository here: [https://github.com/ddimaria/rust-actix-example](https://github.com/ddimaria/rust-actix-example), which was instrumental in helping me figure out some of the authentication pieces, as well as error handling.
 
@@ -1031,9 +1031,9 @@ pub async fn create(pool: Data<PgPool>, params: Json<CreateRequest>) -> Result<J
 
     let connection = get_conn(&pool)?;
 
-    let questions = block(move || Question::create(&connection, &params.body)).await?;
+    let question = block(move || Question::create(&connection, &params.body)).await?;
 
-    Ok(Json(questions))
+    Ok(Json(question))
 }
 ```
 
@@ -1572,3 +1572,197 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
     );
 }
 ```
+
+Open up `server/src/routes/questions/create.rs` and lets pass the new question to the websocket.
+
+```rust
+// new use statements
+use actix::Addr;
+use serde_json::to_value;
+
+use crate::websocket::{MessageToClient, Server};
+
+// updates to create()
+pub async fn create(
+    pool: Data<PgPool>,
+    websocket_srv: Data<Addr<Server>>,
+    params: Json<CreateRequest>,
+) -> Result<Json<Question>, Error> {
+    if params.body == "" {
+        return Err(Error::BadRequest("Body is required".to_string()));
+    }
+
+    let connection = get_conn(&pool)?;
+
+    let question = block(move || Question::create(&connection, &params.body)).await?;
+
+    if let Ok(question) = to_value(question.clone()) {
+        let msg = MessageToClient::new("newquestion", question);
+        websocket_srv.do_send(msg);
+    }
+
+    Ok(Json(question))
+}
+```
+
+We add the websocket server as a data paramter. Wrapping it in the Addr type because it's an Actor. After creating the question we call the websocket server, first converting the question into a Value, then sending it as a MessageToClient. Uou will get some compiler errors, so let's fix it.
+
+First is that our Question does not implement `clone()` so open up `db/src/models/question.rs`.
+
+```rust
+#[derive(Clone, Debug, Identifiable, Serialize, Deserialize, Queryable)]
+pub struct Question {
+    pub id: i32,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+Here we add Clone to the derive list, so our struct can be cloned. We use this as passing it without a clone to `to_value` would cause a move, and we wouldnt be able to return it in the response.
+
+Open up `server/src/tests.rs` next, and we'll address the issue of the missing Server from the App test service.
+
+```rust
+// add the use statements so we can add the Server
+use actix::Actor;
+
+use crate::websocket::Server;
+
+// update get_service to include the websocket server
+pub async fn get_service(
+) -> impl Service<Request = Request, Response = ServiceResponse<Body>, Error = Error> {
+    test::init_service(
+        App::new()
+            .data(db::new_pool())
+            .data(Server::new().start())
+            .configure(routes),
+    )
+    .await
+}
+```
+
+Run `make test` and things should be all set.
+
+## Testing the websocket
+
+With our past tests we've used the `test_service`, but that doesn't really work for the websocket Server, as we need to have the actor running to recieve messages from it. So let's go for a different methodology. Open up `server/src/tests.rs`.
+
+```rust
+use actix_web_actors::ws;
+
+use crate::websocket::{MessageToClient, Server}; // add MessageToClient here
+
+pub fn get_test_server() -> test::TestServer {
+    test::start(|| {
+        App::new()
+            .data(db::new_pool())
+            .data(Server::new().start())
+            .configure(routes)
+    })
+}
+
+pub fn get_websocket_frame_data(frame: ws::Frame) -> Option<MessageToClient> {
+    match frame {
+        ws::Frame::Text(t) => {
+            let bytes = t.as_ref();
+            let data = String::from_utf8(bytes.to_vec()).unwrap();
+            let value: MessageToClient = serde_json::from_str(&data).unwrap();
+            return Some(value);
+        }
+        _ => {}
+    }
+
+    None
+}
+```
+
+We have two functions here. The first one using pretty much the same contents as `get_service` but instead it returns a running web server. The second is a helper function that will be useful for getting frames from the websocket connection stream, and turning them into json data that we can read.
+
+Open up the `create.rs` file again, and let's update the happy path test.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use actix_web::client::Client;
+    use futures::StreamExt;
+    use serde_json;
+    // etc
+```
+
+We add some important use statements here. Client which is a web client that we can use to establish a websocket connection. StreamExt trait that we will need for streaming the websocket responses. serde_json which will we use for converting the data from the websocket into our types.
+
+Jump down to the `test_create_question` function and empty it, we're replacing most of it.
+
+```rust
+#[actix_rt::test]
+pub async fn test_create_question() {
+    let pool = new_pool();
+    let conn = get_conn(&pool).unwrap();
+
+    let srv = tests::get_test_server();
+
+    let client = Client::default();
+    let ws_conn = client.ws(srv.url("/ws/")).connect().await.unwrap();
+
+    let mut res = srv
+        .post("/api/questions")
+        .send_json(&NewQuestion {
+            body: "A new question".to_string(),
+        })
+        .await
+        .unwrap();
+```
+
+As before we create the database connection pool & get a connection. We use our new function to start the test server. We then create a new web client and connect to the websocket server via the URL we specified before. We then replace our test_post() call with calling post() directly on the test server.
+
+```rust
+    assert_eq!(res.status().as_u16(), 200);
+
+    let question: Question = res.json().await.unwrap();
+    assert_eq!(question.body, "A new question");
+
+    let mut stream = ws_conn.1.take(1);
+    let msg = stream.next().await;
+
+    let data = tests::get_websocket_frame_data(msg.unwrap().unwrap());
+    if data.is_some() {
+        let msg = data.unwrap();
+        assert_eq!(msg.msg_type, "newquestion");
+        let question: Question = serde_json::from_value(msg.data).unwrap();
+        assert_eq!(question.body, "A new question");
+    } else {
+        assert!(false, "Message was not a string");
+    }
+```
+
+Similar to our old test we check the status & response body from the HTTP request. We then get a stream from the websockect connection, just asking for a total of 1 message via `take()`. Pulling the data out of the frame, we use the Option type to handle if anything went wrong. Given the data is the type we need, we then check the fields from the websocket frame.
+
+```rust
+    drop(stream);
+
+    let result_questions = questions::dsl::questions.load::<Question>(&conn).unwrap();
+    assert_eq!(result_questions.len(), 1);
+    assert_eq!(result_questions[0].body, "A new question");
+
+    srv.stop().await;
+
+    diesel::delete(questions::dsl::questions)
+        .execute(&conn)
+        .unwrap();
+}
+```
+
+Finish up the test by stopping the stream. We use the standard drop() for this, as the stream implements the Drop trait. This will get called for us when the variable is out of scope, but we also need to stop the server, so that is why we must manually call drop here. Afterwards we have our previous test code of checking the database & cleaning it up, then the server stop code.
+
+Run `make test` and you should be good to go!
+
+## Wrap up
+
+That's it for the functionality implementation. There are improvements that could be made here. One being our use of `do_send` in the `create` route handler. What if the message failed to send? We should at least log the error, or better yet return an error to the user.
+
+If you want to learn more, here's a few topics I'd suggest looking at:
+
+- [Futures](https://docs.rs/futures/0.3.14/futures/)
+- [Actix Actors](https://docs.rs/actix/0.11.1/actix/prelude/trait.Actor.html)
+- [Actix Identity](https://docs.rs/actix-identity/0.3.1/actix_identity/). We didn't talk about authentication at all, but I do leverage this crate in my project: [https://github.com/agmcleod/sc-predictions-server](https://github.com/agmcleod/sc-predictions-server). Can look at the auth crate I setup in there, and how it's integrated in both the websockets & HTTP apis.
