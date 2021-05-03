@@ -1048,9 +1048,9 @@ Now update `server/src/routes/mod.rs` adding our new route.
 **Note** be sure to have the `.route()` chain after the first one so it is part of the `scope()` call. When building this I had attached it to the closing paranthesis of the `service()` call. The route was 404ing on me!
 
 ```rust
-pub mod questions;
-
 use actix_web::web;
+
+pub mod questions;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -1187,3 +1187,388 @@ pub async fn test_create_body_required() {
 ```
 
 We call the same endpoint with an empty string, specifying our `ErrorResponse` type as the response body. From there checking the http status, the value of the error message, and that no database records got written.
+
+## Websockets
+
+In the title I mentioned the use of websockets. Actix gives us the ability to work with a websocket server, and to handle requests by using Actix's actor system. What we're going to do is create an HTTP endpoint for users to connect to the websocket. Then when a question is created, broadcast the question details to all users connected.
+
+Create the files & folders we will need:
+
+```
+mkdir -p server/src/websocket
+touch server/src/websocket/mod.rs
+touch server/src/websocket/server.rs
+```
+
+```rust
+// server/src/main.rs
+mod websocket;
+```
+
+```rust
+// server/src/websocket/mod.rs
+mod server;
+pub use self::server::*;
+```
+
+Let's start with `server.rs`.
+
+```rust
+use std::collections::HashMap;
+
+use actix::prelude::{Message as ActixMessage, Recipient};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(ActixMessage, Deserialize, Serialize)]
+#[rtype(result = "()")]
+pub struct MessageToClient {
+    pub msg_type: String,
+    pub data: Value,
+}
+
+impl MessageToClient {
+    pub fn new(msg_type: &str, data: Value) -> Self {
+        Self {
+            msg_type: msg_type.to_string(),
+            data,
+        }
+    }
+}
+
+pub struct Server {
+    sessions: HashMap<String, Recipient<Message>>
+}
+
+impl Server {
+    pub fn new() -> Self {
+        Server {
+            sessions: HashMap::new(),
+        }
+    }
+}
+```
+
+Going top to bottom, we define a type wrapping around a String, a simple Message. Using `#[rtype(result = "()")]` we define the return type of the message in its result to an empty value.
+
+With `MessageToClient` the idea is to have a message type of somekind. So in our case we will just pass "newquestion", as we will be sending the new question data. The data field is one of Value from serde_json. So any type that can be converted into a Value type. From there we setup a basic constructor.
+
+Finally we setup the struct for our WebSocket Server. This will store the current sessions using a String as a key, which we will generate UUIDs for. The value being the `Recipient` that sent the original `Message`. So when a user connects we receive the `Recipient<Message>` from the HTTP request, and store it in the Server.
+
+Add a send_message function:
+
+```rust
+use serde_json::{error::Result as SerdeResult, Value}; // add the Result use here
+
+impl Server {
+    fn send_message(&self, data: SerdeResult<String>) {
+        match data {
+            Ok(data) => {
+                for recipient in self.sessions.values() {
+                    match recipient.do_send(Message(data.clone())) {
+                        Err(err) => {
+                            error!("Error sending client message: {:?}", err);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(err) => {
+                error!("Data did not convert to string {:?}", err);
+            }
+        }
+    }
+}
+```
+
+To make calls from the handlers a little easier, we pass a Result type and let our server handle the error handling if any. You could opt to do this as the route handler instead. Which may be a better way to go if you want to respond to the user that something went wrong with sending the websocket message.
+
+We will now setup a set of messages to listen for:
+
+```rust
+// a number of new actix & serde imports
+use actix::prelude::{Actor, Context, Handler, Message as ActixMessage, Recipient};
+use serde_json::{error::Result as SerdeResult, to_string, Value};
+
+#[derive(ActixMessage)]
+#[rtype(result = "()")]
+pub struct Connect {
+    pub addr: Recipient<Message>,
+    pub id: String,
+}
+
+impl Handler<Connect> for Server {
+    type Result = ();
+
+    fn handle(&mut self, msg: Connect, _: &mut Context<Self>) {
+        self.sessions.insert(msg.id.clone(), msg.addr);
+    }
+}
+
+#[derive(ActixMessage)]
+#[rtype(result = "()")]
+pub struct Disconnect {
+    pub id: String,
+}
+
+impl Handler<Disconnect> for Server {
+    type Result = ();
+
+    fn handle(&mut self, msg: Disconnect, _: &mut Context<Self>) {
+        self.sessions.remove(&msg.id);
+    }
+}
+
+impl Handler<MessageToClient> for Server {
+    type Result = ();
+
+    fn handle(&mut self, msg: MessageToClient, _: &mut Context<Self>) -> Self::Result {
+        self.send_message(to_string(&msg));
+    }
+}
+```
+
+We've created a few new types based on `ActixMessage`. For the `Connect` message we will get that initial ID as well as the `Recipient<Message>`. Likewise we have a `Disconnect` which removes its identitifier from the HashMap. And then we implement the `Handler` for `MessageToClient`, which calls our helper function we just previously implemented, serializing the object as JSON data.
+
+A number of compiler errors will show along the lines of
+
+```
+the trait bound `websocket::server::Server: actix::actor::Actor` is not satisfied
+the trait `actix::actor::Actor` is not implemented for `websocket::server::Server`
+```
+
+Let's add the trait.
+
+```rust
+impl Actor for Server {
+    type Context = Context<Self>;
+}
+```
+
+What this does is allows the Server to recieve messages (via the Handler trait) as an Actor. With these types applied, we can register the Server as an Actor with actix, which means we can pull it in to our route handlers, similar to the postgres connection pool, and send messages to it. Which actix will send these messages asynchronously.
+
+Open up `server/src/websocket/mod.rs` so we can setup the HTTP route, plus some other key pieces.
+
+```rust
+use std::time::{Duration, Instant};
+
+use uuid::Uuid;
+
+use actix::{
+    prelude::{Actor, Addr}
+};
+
+mod server;
+pub use self::server::*;
+
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub struct WebSocketSession {
+    id: String,
+    hb: Instant,
+    server_addr: Addr<Server>,
+}
+
+
+impl WebSocketSession {
+    fn new(server_addr: Addr<Server>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            hb: Instant::now(),
+            server_addr,
+        }
+    }
+
+    fn send_heartbeat(&self, ctx: &mut <Self as Actor>::Context) {
+        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
+            if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
+                info!("Websocket Client heartbeat failed, disconnecting!");
+                act.server_addr.do_send(Disconnect { id: act.id.clone() });
+                // stop actor
+                ctx.stop();
+
+                // don't try to send a ping
+                return;
+            }
+            ctx.ping(b"");
+        });
+    }
+}
+```
+
+We start off by setting some constants of a heartbeat rate to keep the connection alive, as well as what we consider to be a timeout. We then create a new struct that tracks the id (uuid) of a session, along with the heartbeat, and the server address. The latter is how the session can communicate with the websocket server.
+
+The send_heartbeat function we will setup to be called soon, but the idea is that it uses an actor context to run at a set interval. Provided the heartbeat doesn't get refreshed, it will send a disconnect to the server, so our server clears this session. It will then also stop the context of this actor, so the session gets cleaned up.
+
+uuid is a new dependency, so open up `server/Cargo.toml` to add uuid as a dependency.
+
+```
+uuid = { version = "0.5", features = ["serde", "v4"] }
+```
+
+We have a compiler error, similar to the one we have on the websocket Server.
+
+```
+the trait bound `websocket::WebSocketSession: actix::actor::Actor` is not satisfied
+the trait `actix::actor::Actor` is not implemented for `websocket::WebSocketSession`
+```
+
+The fix for the Server was pretty straight forward, but this one is a little more involved.
+
+```rust
+// update use statements again
+use actix::{
+    fut,
+    prelude::{Actor, Addr},
+    ActorContext, AsyncContext
+};
+use actix_web_actors::ws;
+
+impl Actor for WebSocketSession {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.send_heartbeat(ctx);
+
+        let session_addr = ctx.address();
+        self.server_addr
+            .send(Connect {
+                addr: session_addr.recipient(),
+                id: self.id.clone(),
+            })
+            .into_actor(self)
+            .then(|res, _act, ctx| {
+                match res {
+                    Ok(_res) => {}
+                    _ => ctx.stop(),
+                }
+                fut::ready(())
+            })
+            .wait(ctx);
+    }
+}
+```
+
+Similar to the websocket Server, we set the context as a websocket context, which gives us some extra functionality. We then setup a started function, which is called when the actor starts up. We tell the context to connect the heartbeat function we just wrote, and then send an initial Connect message to the server. Provided it goes well, we return a future::ready, which is similar to a `Promise.resolve()` in JavaScript. Otherwise if things go wrong we have the context stop right away.
+
+We're getting errors about the WebSocketSession not implementing Handler, so let's fix this.
+
+```rust
+use actix::{
+    fut,
+    prelude::{Actor, Addr, Handler},
+    ActorContext, ActorFuture, AsyncContext, ContextFutureSpawner, WrapFuture
+};
+
+impl Handler<Message> for WebSocketSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: Message, ctx: &mut Self::Context) {
+        ctx.text(msg.0);
+    }
+}
+```
+
+A bit simpler this time! We just pass the message String to the actor context as a text message. This is how we pass down the messages from the websocket Server to the client.
+
+Now we need to implement the `StreamHandler` trait, which will allow us to handle a stream of events coming to the Actor. Using the ping/pong to update the heartbeat, close events, errors, etc.
+
+```rust
+// yep, this again
+use actix::{
+    fut,
+    prelude::{Actor, Addr, Handler, StreamHandler},
+    ActorContext, ActorFuture, AsyncContext, ContextFutureSpawner, WrapFuture
+};
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match msg {
+            Ok(ws::Message::Ping(msg)) => {
+                self.hb = Instant::now();
+                ctx.pong(&msg);
+            }
+            Ok(ws::Message::Pong(_)) => {
+                self.hb = Instant::now();
+            }
+            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
+            Ok(ws::Message::Close(reason)) => {
+                self.server_addr.do_send(Disconnect {
+                    id: self.id.clone(),
+                });
+                ctx.close(reason);
+                ctx.stop();
+            }
+            Err(err) => {
+                warn!("Error handling msg: {:?}", err);
+                ctx.stop()
+            }
+            _ => ctx.stop(),
+        }
+    }
+}
+```
+
+The Ping & Pong events are pretty self-explanatory. They update the heartbeat to now, given we know the connection is still good to go. We capture any binary requests, not really doing a whole lot with them. If a close request comes through, we send a Disconnect to the server and close the WebSocketSession.
+
+Last bit of code for this file, we need to add the http request handler to kick off a new session.
+
+```rust
+use actix_web::{web, HttpRequest, HttpResponse};
+
+use errors::Error;
+
+pub async fn ws_index(
+    req: HttpRequest,
+    stream: web::Payload,
+    server_addr: web::Data<Addr<Server>>,
+) -> Result<HttpResponse, Error> {
+    let res = ws::start(
+        WebSocketSession::new(server_addr.get_ref().clone()),
+        &req,
+        stream,
+    )?;
+
+    Ok(res)
+}
+```
+
+This uses the actix websocket crate to start a new actor. We use the server actor address from the data to pass it through, passing request & stream info for the actor to get created.
+
+Open `server/src/main.rs` and connect the web server!
+
+```rust
+use actix::Actor;
+
+// inside main()
+let server = websocket::Server::new().start(); // new line
+
+App::new()
+    .wrap(cors)
+    .wrap(Logger::default())
+    .wrap(Logger::new("%a %{User-Agent}i"))
+    .data(pool.clone())
+    .data(server.clone()) // new line here
+```
+
+Connect the websocket route
+
+```rust
+use actix_web::web;
+
+use crate::websocket;
+
+pub mod questions;
+
+pub fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::resource("/ws/").route(web::get().to(websocket::ws_index))
+    ).service(
+        web::scope("/api")
+            .service(web::scope("/questions")
+                .route("", web::get().to(questions::get_all))
+                .route("", web::post().to(questions::create))),
+    );
+}
+```
