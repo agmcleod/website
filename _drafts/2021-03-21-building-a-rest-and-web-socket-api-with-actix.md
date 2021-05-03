@@ -12,6 +12,12 @@ The application that I ended up building is one for users making predictions for
 
 This application has a bit more pieces to it than make sense for a tutorial like this. Instead we're going to build a piece of it as a questions repository. The user can view a list of questions, as well as create them. When questions are created, users connected will see the updated list. Relatively simple, but it covers a lot of the same concepts.
 
+**Note**
+
+This post expects that you have worked with Rust before, or at least have some working knowledge, and that you have worked on backend web APIs before. As I don't really dig into those concepts here. If Rust interests you, I recommend checking out the official book: [https://doc.rust-lang.org/book/](https://doc.rust-lang.org/book/). This tutorial on implementing linked lists is also fun [https://rust-unofficial.github.io/too-many-lists/index.html](https://rust-unofficial.github.io/too-many-lists/index.html), and does touch on some beginner concepts in Rust.
+
+Secondly I've written this in such a way that the code doesn't always contain the full snippet. All the code you need will be written here, but when re-visiting a file, I don't show all the existing code that is there. I make comments in the code blocks to know when to remove things. I also make notes in both the code comments, and outside when to make additions. I have also added code comments explaining some Rust things, as well as how actix injects certain parameters, or how certain traits apply to the code.
+
 ## Let's get into the setup
 
 First off here is the current version of the full server for my application: [https://github.com/agmcleod/sc-predictions-server]. It is not open source, but I'm happy for folks to use it a reference in their own projects and hobbies.
@@ -444,7 +450,9 @@ pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
 }
 ```
 
-This brings together everything we've setup so far. It uses the Question model to get all records. Since we applied serde Serialize to the Question model, it can be easily converted into JSON. For our error type here we are just using the generic actix error type. The reason for block() is so that the database operation, which is IO blocking functionality, happens on a separate thread. block returns a future meaning we can use `await` to wait for it to complete before returning a response. Creating an Ok result, and wrapping as a Json will return our array of data as JSON through the API.
+This brings together everything we've setup so far. We add the dependencies, and setup our route handler. It's important to note that the `pool: Data<PgPool>` argument works because of how actix allows app state & data to be shared. Coming up we will pass an instance of our pool to `App`, which allows it be accessed as parameters in our route handler functions. You can read more about this here [https://docs.rs/actix-web/3.3.2/actix_web/web/struct.Data.html](https://docs.rs/actix-web/3.3.2/actix_web/web/struct.Data.html)
+
+It uses the Question model to get all records. Since we applied serde Serialize to the Question model, it can be easily converted into JSON. For our error type here we are just using the generic actix error type. The reason for block() is so that the database operation, which is IO blocking functionality, happens on a separate thread. block returns a future meaning we can use `await` to wait for it to complete before returning a response. Creating an Ok result, and wrapping as a Json will return our array of data as JSON through the API.
 
 Create a routing config by opening `server/src/routes/mod.rs`, and add to it:
 
@@ -548,6 +556,9 @@ With that setup open up `get_all.rs`, and add the following to the bottom.
 
 ```rust
 mod tests{
+    // not a type we're using directly, but we need to pull in this trait.
+    // If you leave it out, you'll see a compiler error for calling the query to insert.
+    // The Rust compiler is pretty good about telling you what traits you're missing.
     use diesel::RunQueryDsl;
 
     use db::{
@@ -572,6 +583,12 @@ mod tests{
 }
 ```
 
+We have a few things going on here, as well as a compiler error.
+
+`use diesel::RunQueryDsl;`, ot a type we're using directly, but we need to pull in this trait. If you leave it out, you'll see a compiler error for a trait that is missing, on the call to insert. In those cases the compiler will tell you which trait is needed, so you can simply add the use statement. I really love this about the compiler, as I forget traits all the time.
+
+The other one I want to call out is `#[actix_rt::test]`. If you've written tests for Rust code before, you have probably annotated them with `#[test]`. The reason we use this one here is that the `actix_rt::test` allows us to make them async. If you read the [crate documentation](https://docs.rs/actix-rt/2.2.0/actix_rt/), you'll see that it is a "Tokio-based single-threaded async runtime for the Actix ecosystem". The test attribute macro marks the async function to be run in an Actix system.
+
 Okay, hmm. So when doing this we can't omit fields like ID and record timestamps, as the struct requires them. The values function accepts a number of ways to pass data, but I do like using a typed struct. So let's create a new one in our db crate. Open up `db/src/models/question.rs`
 
 ```rust
@@ -585,7 +602,7 @@ pub struct NewQuestion {
 }
 ```
 
-We need to add the table_name attribute in this case, cause the type does not match our table name here.
+We need to add the table_name attribute in this case, cause the type does not match our table name here. Otherwise the only parameter we really care about is the body, so we add that as a field.
 
 Now back in our test.
 
@@ -953,13 +970,35 @@ Yay! Now let's allow the API consumer to create some questions.
 
 ## Create endpoint
 
-Let's add a create endpoint that allows the caller to create a new question. First thing is to add a create method to our question model. Open up `db/src/models/question.rb`
+Let's add a create endpoint that allows the caller to create a new question. First thing is to add a create method to our question model. Open up `db/src/models/question.rb`, and let's add a create function. This code will actually be quite similar to the code we used to create a question in our tests.
+
+```rust
+impl Question {
+    pub fn create(conn: &PgConnection, body: &String) -> Result<Question, Error> {
+        use crate::schema::questions::dsl::{questions};
+
+        let question = diesel::insert_into(questions).values(NewQuestion {
+            body: body.clone(),
+        }).get_result::<Question>(conn)?;
+
+        Ok(question)
+    }
+}
+```
+
+We pull in the questions dsl as our insert target, and then re-use the NewQuestion we created for the tests. Instead of calling execute, which calls the insert and returns no value, we want to return the data from the insert. As diesel notes in the docs:
+
+>>> When this method is called on an insert, update, or delete statement, it will implicitly add a RETURNING * to the query, unless a returning clause was already specified.
+
+With that we use the ? operator again to return the right error type, and then return an Ok() result if everything is good.
+
+Now for the POST endpoint.
 
 ```bash
 touch server/src/routes/questions/create.rs
 ```
 
-Update the questions module
+Update the routes/questions module
 
 ```rust
 // server/src/routes/questions/mod.rs
@@ -967,4 +1006,184 @@ mod create;
 pub use self::create::*;
 ```
 
+Open up the new create.rs file, and let's get started. You can add most of the same use statements we had in get_all. Though we include the serde Serialize & Deserialize traits, as we need to define a request parameters type.
 
+```rust
+use actix_web::{
+    web::{block, Data, Json},
+    Result,
+};
+use serde::{Deserialize, Serialize};
+
+use db::{get_conn, models::Question, PgPool};
+use errors::Error;
+
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct CreateRequest {
+    body: String,
+}
+
+pub async fn create(pool: Data<PgPool>, params: Json<CreateRequest>) -> Result<Json<Question>, Error> {
+    if params.body == "" {
+        return Err(Error::BadRequest("Body is required".to_string()));
+    }
+
+    let connection = get_conn(&pool)?;
+
+    let questions = block(move || Question::create(&connection, &params.body)).await?;
+
+    Ok(Json(questions))
+}
+```
+
+The create function looks pretty familiar, but we've added a second parameter for the request params. We say it is JSON, with a given set of fields. Because we are expecting JSON, as well as a field called body, if any of these requirements are not met, actix will return a bad request error.
+
+Upon the request looking okay, we check that the body is at least not empty. If it is we return a bad request with a detail string. This is fine for the purposes of the tutorial, but for implementing more validations, I would suggest to look at [https://github.com/Keats/validator](https://github.com/Keats/validator).
+
+After that we do the same operations as before by getting a connection from the pool, and calling our new create function.
+
+Now update `server/src/routes/mod.rs` adding our new route.
+
+**Note** be sure to have the `.route()` chain after the first one so it is part of the `scope()` call. When building this I had attached it to the closing paranthesis of the `service()` call. The route was 404ing on me!
+
+```rust
+pub mod questions;
+
+use actix_web::web;
+
+pub fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api")
+            .service(web::scope("/questions")
+                .route("", web::get().to(questions::get_all))
+                .route("", web::post().to(questions::create))),
+    );
+}
+```
+
+In order to test it, we'll need a new helper function since this is a POST request.
+
+```rust
+// server/src/test.rs
+
+// update our serde use statement
+use serde::{de::DeserializeOwned, Serialize};
+
+pub async fn test_post<T: Serialize, R>(
+    route: &str,
+    params: T,
+) -> (u16, R)
+where
+    R: DeserializeOwned,
+{
+    let mut app = get_service().await;
+
+    let req = test::TestRequest::post().set_json(&params).uri(route);
+
+    let res = test::call_service(&mut app, req.to_request()).await;
+
+    let status = res.status().as_u16();
+    let body = test::read_body(res).await;
+    let json_body = serde_json::from_slice(&body).unwrap_or_else(|_| {
+        panic!(
+            "read_response_json failed during deserialization. response: {} status: {}",
+            String::from_utf8(body.to_vec())
+                .unwrap_or_else(|_| "Could not convert Bytes -> String".to_string()),
+            status
+        )
+    });
+
+    (status, json_body)
+}
+```
+
+This works fairly similarly to our test_get. We setup the service, create a post request adding the paramters as json. We then return the status & the response body.
+
+```rust
+// create.rs
+
+#[cfg(test)]
+mod tests {
+    use diesel::{self, RunQueryDsl};
+
+    use db::{
+        models::{NewQuestion, Question},
+        get_conn,
+        new_pool,
+        schema::questions
+    };
+
+    use crate::tests;
+
+    #[actix_rt::test]
+    pub async fn test_create_question() {
+        let pool = new_pool();
+        let conn = get_conn(&pool).unwrap();
+
+        let res: (u16, Question) = tests::test_post("/api/questions", NewQuestion {
+            body: "A new question".to_string()
+        }).await;
+
+        assert_eq!(res.0, 200);
+        assert_eq!(res.1.body, "A new question");
+
+        let result_questions = questions::dsl::questions.load::<Question>(&conn).unwrap();
+        assert_eq!(result_questions.len(), 1);
+        assert_eq!(result_questions[0].body, "A new question");
+
+        diesel::delete(questions::dsl::questions).execute(&conn).unwrap();
+    }
+}
+```
+
+Upon adding this you will get a compiler error:
+
+```
+the trait bound `db::models::question::NewQuestion: routes::questions::create::_::_serde::Serialize` is not satisfied
+the trait `routes::questions::create::_::_serde::Serialize` is not implemented for `db::models::question::NewQuestion`
+```
+
+What this is saying is that NewQuestion is missing the serde Serialize trait to pass it through a request that is requiring JSON. So open up `db/src/models/question.rs` and add the Serialize derive to the struct.
+
+```rust
+#[derive(Debug, Insertable, Serialize)] // add Serialize here
+#[table_name = "questions"]
+pub struct NewQuestion {
+    pub body: String,
+}
+```
+
+The test is pretty similar to the one we have for get_all. We get a pool & connection so we can inspect the database after creating the record, as well as clean it up. Checking the status & response body working the same way here.
+
+Run `make test`, and we can see the test case succeeds!
+
+```
+test routes::questions::create::tests::test_create_question ... ok
+```
+
+Now let's test our validation code.
+
+```rust
+// add above with the other use statements in the test module
+use errors::ErrorResponse;
+
+#[actix_rt::test]
+pub async fn test_create_body_required() {
+    let pool = new_pool();
+    let conn = get_conn(&pool).unwrap();
+
+    // note here how the deserialize type is changed
+    let res: (u16, ErrorResponse) = tests::test_post("/api/questions", NewQuestion {
+        body: "".to_string()
+    }).await;
+
+    assert_eq!(res.0, 400);
+    assert_eq!(res.1.errors, vec!["Body is required"]);
+
+    let result_questions = questions::dsl::questions.load::<Question>(&conn).unwrap();
+    assert_eq!(result_questions.len(), 0);
+}
+```
+
+We call the same endpoint with an empty string, specifying our `ErrorResponse` type as the response body. From there checking the http status, the value of the error message, and that no database records got written.
