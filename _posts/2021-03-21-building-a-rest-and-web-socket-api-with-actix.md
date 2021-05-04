@@ -4,13 +4,13 @@ date: 2021-03-21 00:00:00
 layout: post
 ---
 
-The world of web development really has come a long way over the years. In late 90s to early 2000s I learned off various websites how to build web pages with HTML, tables, random JavaScript snippets, etc. Over time we got more sophisiticated server rendering options like asp, php, and then into MVC frame works like Rails and Django. Now we're writing the backend side as full on REST apis, where all the server does is return data, and the client uses that data to populate the interface. The interface is built with a variety of technologies, one can still use tech like I did 6-7 years ago: server rendered pages in Rails and writing jQuery code to make things more dynamic. But it's not the most scalable & organized code, so we now have these awesome frameworks like Angular & React to build flexibile and powerful web interfaces.
+The world of web development really has come a long way over the years. In late 90s to early 2000s I learned off various websites how to build web pages with HTML, tables, random JavaScript snippets, etc. Over time we got more sophisiticated server rendering options like asp, php, and then into MVC frame works like Rails and Django. Now we're writing the backend side as full on REST apis, where all the server does is return data, and the client uses that data to populate the interface. The interface is built with a variety of technologies, one can still use tech like I did 6-7 years ago: server rendered pages in Rails and writing jQuery code to make things more dynamic. Which can work really well for a lot of applications, but when you need more dynamic control of a page, it becomes less scalable. This is where the modern frameworks like React & Angular come in.
 
-"Why are you going on about this" you ask. "This post is about Actix & Rust!" Good question, reader! I bring this wonderful history of web development up because I feel like websockets are a really powerful tool. I don't think they're needed for every case out there, I imagine we run into them on all sorts of applications we use day to day. That said it's not a technology that I've leveraged very much in my career working at various agencies. There are a number of frameworks one can dig into to leverage web sockets. I have done so via [Primus](https://github.com/primus/primus) in the past. [ActionHeroJS](https://www.actionherojs.com/) is a NodeJS API framework that offers relatively seamless handling of HTTP & Websocket requests. Though when building out a side project of mine I wanted to leverage both actix for its HTTP API capabitilies and integrate websockets for updating the user on state changes.
+"Why are you going on about this" you ask. "This post is about Actix & Rust!" Good question, reader! I bring this wonderful history of web development up because I feel like websockets are a really powerful tool. I don't think they're needed for every case out there, I imagine we run into them on all sorts of applications we use day to day. That said it's not a technology that I've leveraged very much in my career working at various agencies. There are a number of frameworks one can dig into to leverage web sockets. I have done so via [Primus](https://github.com/primus/primus) in the past. [ActionHeroJS](https://www.actionherojs.com/) is a NodeJS API framework that offers relatively seamless handling of HTTP & Websocket requests. Recently when working on a side project of mine I wanted to leverage both actix for its HTTP API capabitilies and integrate websockets for updating the user on state changes.
 
 The application that I ended up building is one for users making predictions for a particular match or game. This in particular is for a StarCraft meetup I would go to, where we would have a raffle, and each game we would pick before hand who would be the one to win, as well as hit other first milestones in the game. For a sport you could equate this to first to score a goal, or first team to have a strikeout in baseball, etc. The idea was to model this in a similar way to the popular Jackbox games where users can easily join a game on their phone, select their picks and see a leaderboard. The benefits of web sockets for updating state of pick selection, the scoring, etc, came pretty clear to me.
 
-This application has a bit more pieces to it than make sense for a tutorial like this. Instead we're going to build a piece of it as a questions repository. The user can view a list of questions, as well as create them. When questions are created, users connected will see the updated list. Relatively simple, but it covers a lot of the same concepts.
+That application has a bit more pieces to it than make sense for a tutorial like this. Instead I'm taking the lessons I learned while building that project, and we're going to build a piece of it. The user can view a list of questions, as well as create them. When questions are created, users connected to the websocket will recieve new questions. Relatively simple, but it covers a lot of the same concepts.
 
 **Note**
 
@@ -24,9 +24,11 @@ First off here is the current version of the full server for my application: [ht
 
 Secondly I want to give a huge shout out to this repository here: [https://github.com/ddimaria/rust-actix-example](https://github.com/ddimaria/rust-actix-example), which was instrumental in helping me figure out some of the authentication pieces, as well as error handling.
 
+First create a new folder `questions-app`.
+
 For building this application, I'm using docker for running the database, and then compiling & running the rust code on my host machine. If you use Linux, you can use docker to run the rust code. On windows & mac, I found the compilation time was about 20 times slower. Building in docker would take minutes, where as outside of docker it was more like 10 seconds. However if you run the application on your host machine, you will need postgres development tools installed on your machine.
 
-If you wish to do the same, setup a docker.compose.yml file like so:
+If you wish to do the same, setup a `questions-app/docker-compose.yml` file like so:
 
 ```yaml
 version: "3"
@@ -92,7 +94,7 @@ futures-util = "0.3.5"
 log = "0.4.0"
 ```
 
-We won't need all of these right away, but essentially we are providing the base actix crates we need for this application, futures for working with async code. Both in the application and in tests. Handling environment variables, so we don't need to have keys and host names hardcoded. And some good ol fashioned logging.
+We won't need all of these right away, but we are specifying the base actix crates we need for this application, futures for working with async code. Both in the application and in tests. Handling environment variables, so we don't need to have keys and host names hardcoded. And some good ol fashioned logging.
 
 Let's set things up in `server/src/main.rs`.
 
@@ -113,6 +115,32 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("debug"));
 
+    // TBD
+}
+```
+
+The first couple lines of code read the environment variables out of the .env file, as well as bash environment variables... which we haven't setup! Usually with docker I will pass environment variables through the compose file, but because the server is running on the host machine, i use a Makefile. If you're on windows, you'll need to have make installed first.
+
+```Makefile
+SHELL := /bin/bash
+
+db_url := postgres://postgres:my_password@localhost:5434/my_database
+
+run_server:
+	DATABASE_URL=$(db_url) \
+		RUST_BACKTRACE=full \
+		cargo run --bin server
+
+.PHONY: run_server
+```
+
+So now when we run `make run_server`, it will run with the variables we need. I snuck in a `RUST_BACKTRACE` so we can follow error stacks more easily. With that setup, we add the following to the rest of main()
+
+```rust
+#[actix_rt::main]
+async fn main() -> std::io::Result<()> {
+    dotenv().ok();
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("debug"));
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin(&env::var("CLIENT_HOST").unwrap())
@@ -133,45 +161,6 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-```
-
-The first couple lines of code read the environment variables out of the .env file, as well as bash environment variables... which we haven't setup! Usually with docker I will pass environment variables through the compose file, but because the server is running on the host machine, i use a Makefile. If you're on windows, you'll need to have make installed first.
-
-```Makefile
-SHELL := /bin/bash
-
-db_url := postgres://postgres:my_password@localhost:5434/my_database
-
-run_server:
-	CLIENT_HOST=http://localhost:3000 \
-		RUST_BACKTRACE=full \
-		cargo run --bin server
-
-.PHONY: run_server
-```
-
-So now when we run `make run_server`, it will run with the variables we need. I snuck in a `RUST_BACKTRACE` so we can follow error stacks more easily. With that setup, we continue going over main().
-
-```rust
- HttpServer::new(move || {
-    let cors = Cors::default()
-        .allowed_origin(&env::var("CLIENT_HOST").unwrap())
-        .allow_any_method()
-        .allowed_headers(vec![
-            http::header::AUTHORIZATION,
-            http::header::ACCEPT,
-            http::header::CONTENT_TYPE,
-        ])
-        .max_age(3600);
-
-    App::new()
-        .wrap(cors)
-        .wrap(Logger::default())
-        .wrap(Logger::new("%a %{User-Agent}i"))
-})
-.bind("0.0.0.0:8080")?
-.run()
-.await
 ```
 
 We construct the web server, passing a number of services to it. First we allow CORS for our frontend's host only, and limit the headers allowed. Then we create the application server, setting up the logging, but no routes or middleware yet. Finally the server is started on port 8080.
@@ -198,7 +187,7 @@ members = ["db", "server"]
 
 For our database models, we're going to use [diesel](https://diesel.rs). As well as r2d2 for connection pooling, chrono for datetime, and serde for serializing the model into JSON.
 
-Add the following to db/Cargo.toml
+Add the following to `db/Cargo.toml`
 
 ```
 chrono = { version = "0.4.6", features = ["serde"] }
@@ -218,7 +207,7 @@ Install diesel-cli on your host machine:
 cargo install diesel_cli --no-default-features --features postgres
 ```
 
-Then run the setup command
+Then run the setup command, which creates our initial migration.
 
 ```
 DATABASE_URL=postgres://postgres:my_password@localhost:5434/my_database diesel setup --migration-dir=db/migrations
@@ -257,7 +246,7 @@ CREATE TABLE questions (
 SELECT diesel_manage_updated_at('questions');
 ```
 
-The `diesel_manage_updated_at` function applies a trigger to ensure updated_at is populated for us whenever the record gets changed. Also populate the down.yml file with the drop table statement:
+The `diesel_manage_updated_at` function applies a trigger to ensure updated_at is populated for us whenever the record gets changed. Now populate the down.yml file with the drop table statement:
 
 ```sql
 DROP TABLE questions;
@@ -294,13 +283,13 @@ touch db/src/models/question.rs
 Open `db/src/lib.rs` and initialize the modules we will be creating, as well as setup a type for our pool:
 
 ```rust
-pub mod models;
-pub mod schema;
-
 use std::env;
 
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
+
+pub mod models;
+pub mod schema;
 
 pub type PgPool = Pool<ConnectionManager<PgConnection>>;
 
@@ -343,6 +332,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::questions;
 ```
+
+You may see a compiler error in reference to `crate::schema`, we'll fix that shortly!
 
 Create the struct, deriving the types from diesel so it can support the type of queries we need & serialization.
 
@@ -424,12 +415,6 @@ mod get_all;
 pub use self::get_all::*;
 ```
 
-Now let's make a module for our get all endpoint.
-
-```bash
-touch server/src/routes/queestions/get_all.rs
-```
-
 Open get_all.rs and let's create a route to return all questions in the database.
 
 ```rust
@@ -439,7 +424,7 @@ use actix_web::{
     Result,
 };
 
-use db::{models::Question, PgPool};
+use db::{get_conn, models::Question, PgPool};
 
 pub async fn get_all(pool: Data<PgPool>) -> Result<Json<Vec<Question>>, Error> {
     let connection = get_conn(&pool);
@@ -500,6 +485,8 @@ use actix_http::Request;
 use actix_service::Service;
 use actix_web::{body::Body, dev::ServiceResponse, error::Error, test, App};
 use serde::de::DeserializeOwned;
+
+use crate::routes::routes;
 ```
 
 These dependencies will be used for two functions. One to create the service to use for a single request, another to call our get request.
@@ -521,7 +508,7 @@ where
     R: DeserializeOwned,
 {
     let mut app = get_service().await;
-    let mut req = test::TestRequest::get().uri(route);
+    let req = test::TestRequest::get().uri(route);
     let res = test::call_service(&mut app, req.to_request()).await;
 
     let status = res.status().as_u16();
@@ -555,6 +542,7 @@ serde_json = "1.0.13"
 With that setup open up `get_all.rs`, and add the following to the bottom.
 
 ```rust
+#[cfg(test)]
 mod tests{
     // not a type we're using directly, but we need to pull in this trait.
     // If you leave it out, you'll see a compiler error for calling the query to insert.
@@ -585,7 +573,7 @@ mod tests{
 
 We have a few things going on here, as well as a compiler error.
 
-`use diesel::RunQueryDsl;`, ot a type we're using directly, but we need to pull in this trait. If you leave it out, you'll see a compiler error for a trait that is missing, on the call to insert. In those cases the compiler will tell you which trait is needed, so you can simply add the use statement. I really love this about the compiler, as I forget traits all the time.
+`use diesel::RunQueryDsl;`, is not a type we're using directly, but we need to pull in this trait. If you leave it out, you'll see a compiler error for a trait that is missing, on the call to insert. In those cases the compiler will tell you which trait is needed, so you can simply add the use statement. I really love this about the compiler, as I forget traits all the time.
 
 The other one I want to call out is `#[actix_rt::test]`. If you've written tests for Rust code before, you have probably annotated them with `#[test]`. The reason we use this one here is that the `actix_rt::test` allows us to make them async. If you read the [crate documentation](https://docs.rs/actix-rt/2.2.0/actix_rt/), you'll see that it is a "Tokio-based single-threaded async runtime for the Actix ecosystem". The test attribute macro marks the async function to be run in an Actix system.
 
@@ -758,7 +746,7 @@ pub enum Error {
 }
 ```
 
-We have our usual use statements to pull in dependents, but also we setup our Error enum. I've added all the types we're looking to specifically bubble up. You can add more types, like in my own application I have UnprocessableEntity for returning specific validation errors. Such as when joining a lobby, and the username is already taken for that lobby. What I like about this is the usage of Rust enums. We can define some of them to carry an error message, along with it being NotFound, or PoolError.
+We have our usual use statements to pull in dependents, but also we setup our Error enum. I've added all the types we're looking to specifically bubble up. You can add more types, like in my own application I have UnprocessableEntity for returning specific validation errors. Such as when joining a lobby, and the username is already taken for that lobby. What I like about this is the usage of Rust enums. We can define some of them to carry an error message, along with it being a specific type.
 
 For our enum we want it to respond as an actix_web ResponseError, so implement it:
 
@@ -801,7 +789,7 @@ pub struct ErrorResponse {
 
 We need it to Serialize & Deserialize via serde, otherwise it's pretty simple. Just contains an array of error messages that will be returned to the client.
 
-Then, we will add the From trait for some types, so the into() ErrorResponse will work. This is done by implementing the From trait for `&str`, `String`, and `Vec<String>` types.
+Then, we will add the From trait for some types on our ErrorResponse, so the into() ErrorResponse will work. This is done by implementing the From trait for `&str`, `String`, and `Vec<String>` types.
 
 ```rust
 impl From<&str> for ErrorResponse {
@@ -901,33 +889,23 @@ impl Question {
 Because we're using the ? operator, the From trait conversion is doing most of the lifting for us. Open `server/src/routes/questions/get_all.rs` and change the error type there too.
 
 ```rust
-// remove errors::Error from actix_web use
+// remove actix_web::errors::Error
 use actix_web::{
     web::{block, Data, Json},
     Result,
 };
 
+// add our type
 use errors::Error;
 ```
 
-This doesn't clean up the use of unwrap(), so let's address that. Open up `db/src/lib.rs`, updating dependencies & get_conn as follows.
+This doesn't clean up the use of unwrap() in `get_conn()`, so let's address that. Open up `db/src/lib.rs`, updating dependencies & get_conn as follows.
 
 ```rust
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate diesel;
 
-pub mod models;
-pub mod schema;
-
-use std::env;
-
-use diesel::pg::PgConnection;
-use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use r2d2::Error;
-
-pub type PgPool = Pool<ConnectionManager<PgConnection>>;
 
 pub fn get_conn(pool: &PgPool) -> Result<PooledConnection<ConnectionManager<PgConnection>>, Error> {
     pool.get().map_err(|err| {
@@ -970,7 +948,7 @@ Yay! Now let's allow the API consumer to create some questions.
 
 ## Create endpoint
 
-Let's add a create endpoint that allows the caller to create a new question. First thing is to add a create method to our question model. Open up `db/src/models/question.rb`, and let's add a create function. This code will actually be quite similar to the code we used to create a question in our tests.
+Let's add a create endpoint that allows the caller to create a new question. First thing is to add a create method to our question model. Open up `db/src/models/question.rb`, and let's add a create function to our existing `impl Question`. This code will be quite similar to the code we used to create a question in our tests.
 
 ```rust
 impl Question {
@@ -986,7 +964,7 @@ impl Question {
 }
 ```
 
-We pull in the questions dsl as our insert target, and then re-use the NewQuestion we created for the tests. Instead of calling execute, which calls the insert and returns no value, we want to return the data from the insert. As diesel notes in the docs:
+We pull in the questions dsl as our insert target, and then re-use the NewQuestion we created for the tests. Instead of calling execute, which calls the insert and returns no value, we call get_result to return the data from the insert. As diesel notes in the docs:
 
 >>> When this method is called on an insert, update, or delete statement, it will implicitly add a RETURNING * to the query, unless a returning clause was already specified.
 
@@ -1006,7 +984,7 @@ mod create;
 pub use self::create::*;
 ```
 
-Open up the new create.rs file, and let's get started. You can add most of the same use statements we had in get_all. Though we include the serde Serialize & Deserialize traits, as we need to define a request parameters type.
+Open up the new create.rs file, and let's get started. You can add most of the same use statements we had in get_all. In addition we use the serde Serialize & Deserialize traits, as we need to define a request parameters type.
 
 ```rust
 use actix_web::{
@@ -1037,9 +1015,9 @@ pub async fn create(pool: Data<PgPool>, params: Json<CreateRequest>) -> Result<J
 }
 ```
 
-The create function looks pretty familiar, but we've added a second parameter for the request params. We say it is JSON, with a given set of fields. Because we are expecting JSON, as well as a field called body, if any of these requirements are not met, actix will return a bad request error.
+The create function looks pretty familiar, but we've added a second parameter for the request params. We declare it as JSON, with a given set of fields by stating the struct to use. If the data coming in is not JSON, or it does not match the structure of `CreateRequest`, actix will return a bad request error.
 
-Upon the request looking okay, we check that the body is at least not empty. If it is we return a bad request with a detail string. This is fine for the purposes of the tutorial, but for implementing more validations, I would suggest to look at [https://github.com/Keats/validator](https://github.com/Keats/validator).
+Upon the request looking okay, we should check that the body is not empty. If it is we return a bad request with a detail string. This is fine for the purposes of the tutorial, but for implementing more validations, I would suggest to look at [https://github.com/Keats/validator](https://github.com/Keats/validator).
 
 After that we do the same operations as before by getting a connection from the pool, and calling our new create function.
 
@@ -1098,7 +1076,7 @@ where
 }
 ```
 
-This works fairly similarly to our test_get. We setup the service, create a post request adding the paramters as json. We then return the status & the response body.
+This works fairly similarly to our test_get. We setup the service, create a post request adding the parameters as JSON. We then return the status & the response body.
 
 ```rust
 // create.rs
@@ -1188,6 +1166,19 @@ pub async fn test_create_body_required() {
 
 We call the same endpoint with an empty string, specifying our `ErrorResponse` type as the response body. From there checking the http status, the value of the error message, and that no database records got written.
 
+Run `make test` again and you should see:
+
+```
+running 3 tests
+test routes::questions::create::tests::test_create_body_required ... ok
+test routes::questions::create::tests::test_create_question ... ok
+test routes::questions::get_all::tests::test_get_all_returns_questions ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+That covers our create endpoint, lets get into websockets.
+
 ## Websockets
 
 In the title I mentioned the use of websockets. Actix gives us the ability to work with a websocket server, and to handle requests by using Actix's actor system. What we're going to do is create an HTTP endpoint for users to connect to the websocket. Then when a question is created, broadcast the question details to all users connected.
@@ -1220,6 +1211,10 @@ use actix::prelude::{Message as ActixMessage, Recipient};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(ActixMessage)]
+#[rtype(result = "()")]
+pub struct Message(pub String);
+
 #[derive(ActixMessage, Deserialize, Serialize)]
 #[rtype(result = "()")]
 pub struct MessageToClient {
@@ -1249,9 +1244,9 @@ impl Server {
 }
 ```
 
-Going top to bottom, we define a type wrapping around a String, a simple Message. Using `#[rtype(result = "()")]` we define the return type of the message in its result to an empty value.
+Going top to bottom, we define Message, to have a struct wrapping around a String. This is the basics of a message coming over the websocket. They need to have the return type defined, so we do this using an attribute. `#[rtype(result = "()")]`. For this and all our types, we're just returning an empty value.
 
-With `MessageToClient` the idea is to have a message type of somekind. So in our case we will just pass "newquestion", as we will be sending the new question data. The data field is one of Value from serde_json. So any type that can be converted into a Value type. From there we setup a basic constructor.
+With `MessageToClient` we declare the type of message via a string key. So in our case we will just pass "newquestion", as we will be sending the new question data. The data field is one of Value from serde_json. So any type that can be converted into a Value type. From there we setup a basic constructor.
 
 Finally we setup the struct for our WebSocket Server. This will store the current sessions using a String as a key, which we will generate UUIDs for. The value being the `Recipient` that sent the original `Message`. So when a user connects we receive the `Recipient<Message>` from the HTTP request, and store it in the Server.
 
@@ -1281,7 +1276,7 @@ impl Server {
 }
 ```
 
-To make calls from the handlers a little easier, we pass a Result type and let our server handle the error handling if any. You could opt to do this as the route handler instead. Which may be a better way to go if you want to respond to the user that something went wrong with sending the websocket message.
+To make calls from the handlers a little easier, we pass a SerdeResult type and let our server handle the error handling if any. You could opt to do this as the route handler instead. Which may be a better way to go if you want to respond to the user that something went wrong with sending the websocket message.
 
 We will now setup a set of messages to listen for:
 
@@ -1328,7 +1323,7 @@ impl Handler<MessageToClient> for Server {
 }
 ```
 
-We've created a few new types based on `ActixMessage`. For the `Connect` message we will get that initial ID as well as the `Recipient<Message>`. Likewise we have a `Disconnect` which removes its identitifier from the HashMap. And then we implement the `Handler` for `MessageToClient`, which calls our helper function we just previously implemented, serializing the object as JSON data.
+We've created a few new types based on `ActixMessage`. For the `Connect` message we will get that initial ID as well as the `Recipient<Message>`. Likewise we have a `Disconnect` which removes its identitifier from the HashMap. And then we implement the `Handler` for `MessageToClient`, which calls our helper function we just previously implemented, serializing the object as JSON data. The reason for the Handler trait, is so that we can pass any of these types to our websocket Server.
 
 A number of compiler errors will show along the lines of
 
@@ -1345,7 +1340,7 @@ impl Actor for Server {
 }
 ```
 
-What this does is allows the Server to recieve messages (via the Handler trait) as an Actor. With these types applied, we can register the Server as an Actor with actix, which means we can pull it in to our route handlers, similar to the postgres connection pool, and send messages to it. Which actix will send these messages asynchronously.
+What this does is allows the Server to recieve messages (via the Handler trait) as an Actor. With these types applied, we can register the Server as an Actor with actix, which means we can pull it in to our route handlers, similar to the postgres connection pool, and send messages to it. Actix will then send these messages asynchronously.
 
 Open up `server/src/websocket/mod.rs` so we can setup the HTTP route, plus some other key pieces.
 
@@ -1358,6 +1353,7 @@ use actix::{
     prelude::{Actor, Addr}
 };
 
+// same as before
 mod server;
 pub use self::server::*;
 
@@ -1450,7 +1446,7 @@ impl Actor for WebSocketSession {
 }
 ```
 
-Similar to the websocket Server, we set the context as a websocket context, which gives us some extra functionality. We then setup a started function, which is called when the actor starts up. We tell the context to connect the heartbeat function we just wrote, and then send an initial Connect message to the server. Provided it goes well, we return a future::ready, which is similar to a `Promise.resolve()` in JavaScript. Otherwise if things go wrong we have the context stop right away.
+Similar to the websocket Server, we set the context as a websocket context, which gives us the capability to have the heartbeat interval. We then setup a `started` function, which is called when the actor starts up. We tell the context to connect the heartbeat function we just wrote, and then send an initial Connect message to the server. Provided it goes well, we return a future::ready, which is similar to a `Promise.resolve()` in JavaScript. With this we're returning an Ok() future. Otherwise if things go wrong we have the context stop right away.
 
 We're getting errors about the WebSocketSession not implementing Handler, so let's fix this.
 
@@ -1470,7 +1466,7 @@ impl Handler<Message> for WebSocketSession {
 }
 ```
 
-A bit simpler this time! We just pass the message String to the actor context as a text message. This is how we pass down the messages from the websocket Server to the client.
+A bit simpler this time! We just pass the message String to the actor context as a text message. This is how we pass down the messages from the websocket Server to the client. If you'll recall, the `MessageToClient` struct would pass its data to the Server's `send_message`. This function would create an instance of `Message` and pass to the recipient context. Which then comes back to this `WebSocketSession`.
 
 Now we need to implement the `StreamHandler` trait, which will allow us to handle a stream of events coming to the Actor. Using the ping/pong to update the heartbeat, close events, errors, etc.
 
@@ -1510,7 +1506,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketSession 
 }
 ```
 
-The Ping & Pong events are pretty self-explanatory. They update the heartbeat to now, given we know the connection is still good to go. We capture any binary requests, not really doing a whole lot with them. If a close request comes through, we send a Disconnect to the server and close the WebSocketSession.
+The Ping & Pong events are for a back and forth basic sending of data to confirm the connection is still alive. They update the heartbeat to the current timestamp, so the heartbeat interval will know not to close the connection. We also capture any binary requests, not really doing a whole lot with them. If a close request comes through, we send a Disconnect to the server and close the WebSocketSession.
 
 Last bit of code for this file, we need to add the http request handler to kick off a new session.
 
@@ -1550,6 +1546,7 @@ App::new()
     .wrap(Logger::new("%a %{User-Agent}i"))
     .data(pool.clone())
     .data(server.clone()) // new line here
+    .configure(routes::routes)
 ```
 
 Connect the websocket route
@@ -1605,7 +1602,7 @@ pub async fn create(
 }
 ```
 
-We add the websocket server as a data paramter. Wrapping it in the Addr type because it's an Actor. After creating the question we call the websocket server, first converting the question into a Value, then sending it as a MessageToClient. Uou will get some compiler errors, so let's fix it.
+We add the websocket server as a data paramter. Wrapping it in the Addr type because it's an Actor. After creating the question we call the websocket server, first converting the question into a Value, then sending it as a MessageToClient. You will get some compiler errors, so let's fix it.
 
 First is that our Question does not implement `clone()` so open up `db/src/models/question.rs`.
 
@@ -1619,9 +1616,9 @@ pub struct Question {
 }
 ```
 
-Here we add Clone to the derive list, so our struct can be cloned. We use this as passing it without a clone to `to_value` would cause a move, and we wouldnt be able to return it in the response.
+Here we add Clone to the derive list, so our struct can be cloned. We use this as passing it without a clone to `to_value` would cause a move, and we wouldnt be able to return the question in the JSON response.
 
-Open up `server/src/tests.rs` next, and we'll address the issue of the missing Server from the App test service.
+Now we'll update the tests to support the websocket. Open up `server/src/tests.rs`.
 
 ```rust
 // add the use statements so we can add the Server
@@ -1642,7 +1639,7 @@ pub async fn get_service(
 }
 ```
 
-Run `make test` and things should be all set.
+Run `make test` to ensure our current tests pass.
 
 ## Testing the websocket
 
@@ -1690,7 +1687,7 @@ mod tests {
     // etc
 ```
 
-We add some important use statements here. Client which is a web client that we can use to establish a websocket connection. StreamExt trait that we will need for streaming the websocket responses. serde_json which will we use for converting the data from the websocket into our types.
+We add some important use statements here. `Client` is a web client that we can use to establish a websocket connection. `StreamExt` is one we will need for streaming the websocket responses. `serde_json` will we use for converting the data from the websocket into our types.
 
 Jump down to the `test_create_question` function and empty it, we're replacing most of it.
 
@@ -1714,7 +1711,7 @@ pub async fn test_create_question() {
         .unwrap();
 ```
 
-As before we create the database connection pool & get a connection. We use our new function to start the test server. We then create a new web client and connect to the websocket server via the URL we specified before. We then replace our test_post() call with calling post() directly on the test server.
+As before, we create the database connection pool & get a connection. We use our new function to start the test server. We then create a new web client and connect to the websocket server via the URL we specified in route configuration. We then replace our test_post() call with calling post() directly on the test server.
 
 ```rust
     assert_eq!(res.status().as_u16(), 200);
@@ -1736,7 +1733,7 @@ As before we create the database connection pool & get a connection. We use our 
     }
 ```
 
-Similar to our old test we check the status & response body from the HTTP request. We then get a stream from the websockect connection, just asking for a total of 1 message via `take()`. Pulling the data out of the frame, we use the Option type to handle if anything went wrong. Given the data is the type we need, we then check the fields from the websocket frame.
+Similar to our old test we check the status & response body from the HTTP request. We then get a stream from the websockect connection, just asking for a total of 1 message via `take()`. Pulling the data out of the frame, we use the Option type to handle if anything went wrong. Provided the data is the type we need we then check the fields from the websocket frame.
 
 ```rust
     drop(stream);
@@ -1758,6 +1755,8 @@ Finish up the test by stopping the stream. We use the standard drop() for this, 
 Run `make test` and you should be good to go!
 
 ## Wrap up
+
+Can find the completed source to reference [here](https://github.com/agmcleod/questions-app).
 
 That's it for the functionality implementation. There are improvements that could be made here. One being our use of `do_send` in the `create` route handler. What if the message failed to send? We should at least log the error, or better yet return an error to the user.
 
