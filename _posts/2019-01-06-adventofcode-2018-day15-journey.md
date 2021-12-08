@@ -51,7 +51,7 @@ After that was done, if the target was 1 away, it would choose to attack. This c
 
 **Anyways** when running the examples, I kept getting wrong answers. I would see that the units would sometimes move in the wrong direction, and i figured out why. Manhattan distance does not work for this problem. A path could be equal distance, but maybe a unit moves from 3,1 to 3,2 instead of to 2,1. Even though they have the same distance (because of a wall), 3,2 is closer to the target down at 5,5. But 2,1 is before 3,2 in reading order.
 
-From the example set, here’s round 24 & 25. The only elf is at the bottom right, so the elf at 3,1 wants to move to 5,5. It should move to 2,1 as shown in round 25, as 2,1 and 3,2 will take the same distance.
+From the example set, here’s round 24 & 25. The only elf is at the bottom right, so the goblin at 3,1 wants to move to 5,5. It should move to 2,1 as shown in round 25, as 2,1 and 3,2 will take the same distance. The other goblins move too, but can look at the one at the top row for now.
 ```
 After 24 rounds:
 #######
@@ -92,9 +92,9 @@ So I had to abandon `A*`. I would read on the sub reddit about folks using Bread
 That said, I kinda did it wrong at first.
 
 ## Breadth First Search (or Depth First Search by accident)
-This solution was done using recursion, which what led me down the wrong path. As neighbours for a tile would be found, I would call the `find_paths()` on those neighbours instead of adding them to a stack. Meaning it would go far down a single path, and find the end, even though it might be the wrong way.
+This solution was done using recursion, which what led me down the wrong path. As neighbours for a tile would be found, I would call the `find_paths()` on those neighbours instead of adding them to a stack. Meaning it would go far down a single path, and find the end, even though it might be the wrong way. This means I was actually doing Depth First Search.
 
-Another problem I had was performance. In the recursive calls, I would clone my scanned list, meaning other branches in the DFS would not know if another coordinate was scanned already. I did this on purpose, as I was worried that I would not cover all cases. However, this leads it to run a crazy number of iterations, unnecessarily. What fixed this was changing `get_neighbours` to return me the neighbours of a tile in reading order. I could then keep a single HashSet of scanned
+Another problem I had was performance. In the recursive calls, I would clone my scanned list, meaning other branches in the DFS would not know if another coordinate was scanned already. I did this on purpose, as I was worried that I would not cover all cases. However, this leads it to run a crazy number of iterations, unnecessarily. What fixed this was changing `get_neighbours` to return me the neighbours of a tile in reading order. I could then keep a single HashSet of scanned coordinates while ensuring all of the options get covered.
 
 ```rust
 pub fn get_neighbours(
@@ -141,7 +141,7 @@ pub fn get_neighbours(
 }
 ```
 
-You might also notice in this code sample, i’m allowing the coordinate to be a unit. This was initially left over from it being a target, but I used that for finding local targets to attack too. So when scanning for paths to move to, if i found a neighbour that was an enemy unit, i would then have a unit not longer worry about path finding, but instead go into attack mode, collecting the potential attackers, and priortized based hp -> reading order.
+You might also notice in this code sample, i’m allowing the coordinate to be a Unit. This was initially left over from pathing to a target, but I used that for finding local targets to attack too. So when scanning for paths to move to, if i found a neighbour that was an enemy unit, i would then have a unit not longer worry about path finding, but instead go into attack mode, collecting the potential attackers, and priortized based hp -> reading order.
 
 ```rust
 fn take_turn(empty_map: &HashSet<Coord>, tiles: &mut Vec<Vec<TileType>>, unit_collection: &mut HashMap<Coord, Unit>, targets: &mut HashMap<Coord, Unit>, unit_coord: &Coord, min_distance: &mut usize, distances: &mut HashMap<usize, SelectionData>) {
@@ -208,7 +208,7 @@ fn take_turn(empty_map: &HashSet<Coord>, tiles: &mut Vec<Vec<TileType>>, unit_co
 
 The `perform_move` still does complex logic on tracking min distance, whether it moves into attack range, etc. But this code I was starting to feel happy with.
 
-The `match` stuff in rust is also quite awesome. The fact that I could put re`ading_order` into a utility function that works with the `Ordering` trait is just awesome.
+The `match` stuff in rust is also quite awesome. The fact that I could put `reading_order` into a utility function that works with the `Ordering` trait is just awesome.
 
 But still, this was depth first search, so I need to move away from that.
 
@@ -277,4 +277,4 @@ And that’s it! Whew, it was quite the problem, frustrating at times, but I lea
 
 Thanks for reading, and Happy New Year!
 
-https://github.com/agmcleod/adventofcode-2018/blob/master/15/src/main.rs
+Full source: [https://github.com/agmcleod/adventofcode-2018/blob/master/15/src/main.rs](https://github.com/agmcleod/adventofcode-2018/blob/master/15/src/main.rs)
