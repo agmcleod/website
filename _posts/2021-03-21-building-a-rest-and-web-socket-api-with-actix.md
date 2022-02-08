@@ -1760,7 +1760,7 @@ Run `make test` and you should be good to go!
 
 ## Wrap up
 
-Can find the completed source to reference [here](https://github.com/agmcleod/questions-app).
+Can find the completed source to reference [here](https://github.com/agmcleod/questions-app-rust-actix).
 
 That's it for the functionality implementation. There are improvements that could be made here. One being our use of `do_send` in the `create` route handler. What if the message failed to send? We should at least log the error, or better yet return an error to the user.
 
