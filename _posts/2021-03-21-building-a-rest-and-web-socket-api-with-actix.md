@@ -18,7 +18,7 @@ This post expects that you have worked with Rust before, or at least have some w
 
 Secondly I've written this in such a way that the code doesn't always contain the full snippet. All the code you need will be written here, but when re-visiting a file, I don't show all the existing code that is there. I make comments in the code blocks to know when to remove things. I also make notes in both the code comments, and outside when to make additions. I have also added code comments explaining some Rust things, as well as how actix injects certain parameters, or how certain traits apply to the code.
 
-**Actix versio 4 update**
+**Actix version 4 update**
 
 This post was written for version 3, but version 4 has now hit RC. The post itself is not updated, but the completed app has been. You can see the changes I made to update the app here: [https://github.com/agmcleod/questions-app-rust-actix/commit/41784f9d99ab51113ca0de98a198eb9fa8ff83da](https://github.com/agmcleod/questions-app-rust-actix/commit/41784f9d99ab51113ca0de98a198eb9fa8ff83da)
 
