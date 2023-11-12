@@ -12,16 +12,22 @@ So far it's been a fun system to build for. The scripting uses Lua, but you can 
 
 ## But what game am I making?
 
-Around that time I was also replaying the original [Diablo](https://www.gog.com/game/diablo). While it's very much an old feeling game, I like the simplicity of it. Its combat is very straight forward where you click an enemy and attack it with either a melee weapon or a bow. Or you have a spell selected and click to cast said spell in a direction. The itemization is also rather straight forward. Compared to playing my fare share of Path of Exile, it was a fresh of breath air. So I decided to make my own simple top down action RPG for the playdate.
+Around that time I was also replaying the original [Diablo](https://www.gog.com/game/diablo). While it's very much an old feeling game, I like the simplicity of it. Its combat is very straight forward where you click an enemy and attack it with either a melee weapon or a bow. Or you have a spell selected and click to cast said spell in a direction. The itemization is also rather straight forward. Compared to playing my fare share of Path of Exile, it was a breath of fresh air. So I decided to make my own simple top down action RPG for the playdate.
 
-![A screnshot of the game showing the player in the centre, a dropped chest armor  next to them, and being attacked by an enemy](/assets/playdate-game1.png)
+![A screnshot of the game showing the player in the center, a dropped chest armor  next to them, and being attacked by an enemy](/assets/playdate-game1.png)
 
 I'm keeping the scope down by limiting the gameplay to just being a simple warrior. You press A to attack enemies, turn the crank to use a potion to heal, and the D Pad to move around. Defeated enemies can drop items, which you can pick up & equip.
 
 Items can have 1-3 modifiers, selecting from a range of offensive & defensive attributes. Damage, defense, attack speed, life, resistances, etc.
 
-![A screnshot of the inventory in the game. It shows two items in the inventory, with a short sword being selected. The short-sword has 2-7 base damage, and a modifier of 43% increased damage. It also shows the stats of the currently equipped weapon, so the player can compare](/assets/playdate-game2.png)
+![A screnshot of the inventory in the game. It shows two items in the inventory, with a short sword being selected. The short sword has 2-7 base damage, and a modifier of 43% increased damage. It also shows the stats of the currently equipped weapon, so the player can compare](/assets/playdate-game2.png)
 
 What I hope to have is a range of levels the player can go through, where they have a relaxing & fun time grinding away.
 
 I released a demo this summer which can be found here: [https://agmcleod.itch.io/the-depths-demo](https://agmcleod.itch.io/the-depths-demo). Since then I've been working on implementing things like multiple floors, more enemies, etc.
+
+## Building for the playdate
+
+The SDK is free to use, offering both Lua & C APIs as I mentioned before. Using Lua has been interesting so far, as I effectively have everything in global scope across multiple files. So i've been doing more classic namespacing to avoid collisions. Once you get an understanding of the sprite system and different APIs available, it allows one to iterate quickly.
+
+I'm using an importer library for the level editor LDTK, which is found here: [https://devforum.play.date/t/importer-for-ldtk-level-editor/1547](https://devforum.play.date/t/importer-for-ldtk-level-editor/1547).
