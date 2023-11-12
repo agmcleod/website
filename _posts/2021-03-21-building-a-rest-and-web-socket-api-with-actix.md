@@ -2,6 +2,7 @@
 title: Building a REST and Web Socket API with Actix and Rust
 date: 2021-03-21 00:00:00
 layout: post
+excerpt_separator: <!--more-->
 ---
 
 **Actix version 4 update**
@@ -9,6 +10,8 @@ layout: post
 This post was written for version 3, but version 4 has now hit RC. The post itself is not updated, but the completed app has been. You can see the changes I made to update the app here: [https://github.com/agmcleod/questions-app-rust-actix/compare/75ede6206f33d8948faac2ef5e614d4793a3222a..main](https://github.com/agmcleod/questions-app-rust-actix/compare/75ede6206f33d8948faac2ef5e614d4793a3222a..main)
 
 The world of web development really has come a long way over the years. In late 90s to early 2000s I learned off various websites how to build web pages with HTML, tables, random JavaScript snippets, etc. Over time we got more sophisiticated server rendering options like asp, php, and then into MVC frame works like Rails and Django. Now we're writing the backend side as full on REST apis, where all the server does is return data, and the client uses that data to populate the interface. The interface is built with a variety of technologies, one can still use tech like I did 6-7 years ago: server rendered pages in Rails and writing jQuery code to make things more dynamic. Which can work really well for a lot of applications, but when you need more dynamic control of a page, it becomes less scalable. This is where the modern frameworks like React & Angular come in.
+
+<!--more-->
 
 "Why are you going on about this" you ask. "This post is about Actix & Rust!" Good question, reader! I bring this wonderful history of web development up because I feel like websockets are a really powerful tool. I don't think they're needed for every case out there, I imagine we run into them on all sorts of applications we use day to day. That said it's not a technology that I've leveraged very much in my career working at various agencies. There are a number of frameworks one can dig into to leverage web sockets. I have done so via [Primus](https://github.com/primus/primus) in the past. [ActionHeroJS](https://www.actionherojs.com/) is a NodeJS API framework that offers relatively seamless handling of HTTP & Websocket requests. Recently when working on a side project of mine I wanted to leverage both actix for its HTTP API capabitilies and integrate websockets for updating the user on state changes.
 

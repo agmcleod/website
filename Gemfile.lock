@@ -10,8 +10,8 @@ GEM
       http_parser.rb (~> 0)
     eventmachine (1.2.7)
     eventmachine (1.2.7-x64-mingw32)
-    ffi (1.15.5)
-    ffi (1.15.5-x64-mingw32)
+    ffi (1.16.3)
+    ffi (1.16.3-x64-mingw32)
     forwardable-extended (2.6.0)
     http_parser.rb (0.8.0)
     i18n (1.9.1)
@@ -44,7 +44,7 @@ GEM
       rexml
     kramdown-parser-gfm (1.1.0)
       kramdown (~> 2.0)
-    liquid (4.0.3)
+    liquid (4.0.4)
     listen (3.7.1)
       rb-fsevent (~> 0.10, >= 0.10.3)
       rb-inotify (~> 0.9, >= 0.9.10)
@@ -74,6 +74,7 @@ GEM
     tzinfo-data (1.2021.5)
       tzinfo (>= 1.0.0)
     unicode-display_width (1.8.0)
+    wdm (0.1.1)
     webrick (1.7.0)
 
 PLATFORMS
@@ -88,6 +89,7 @@ DEPENDENCIES
   minima (~> 2.5)
   tzinfo (~> 1.2)
   tzinfo-data
+  wdm (>= 0.1.0)
   webrick (~> 1.7)
 
 BUNDLED WITH
