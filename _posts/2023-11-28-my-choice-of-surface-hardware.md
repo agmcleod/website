@@ -1,6 +1,6 @@
 ---
 layout: post
-title: my-choice-of-surface-hardware
+title: My Choice of Surface Hardware
 date: 2023-11-28 13:12 -0500
 ---
 
