@@ -46,7 +46,7 @@ What I have to do when I upload the files in the AWS UI, is I upload the html fi
 
 ## What I like about Svelte
 
-Setting up the routes & components felt very natural. I took me a bit to learn, but I like the hierarchy of layouts, defining their data, routes & nested routes, and how they inherit data. Loading in predictions from a JSON file in the layout means every page has it. Likewise if i have a route like `/[year]/+page.ts`, that file will load data for other routes under it, such as: `/[year]/about/+page.svelte`.
+Setting up the routes & components felt very natural. It took me a bit to learn, but I like the hierarchy of layouts, defining their data, routes & nested routes. It's nice that pages will inherit data from parent routes and layouts. For example, loading in predictions from a JSON file in the layout means every page has it. Likewise if i have a route like `/[year]/+page.ts`, that file will load data for other routes under it, such as: `/[year]/about/+page.svelte`.
 
 In each `+page.svelte` file or `components/Component.svelte` file, I like that the template, JS code, and relevant CSS code is all there. It handles CSS class scoping for you. Variables defined in the script tag are all available in the html template portion. Defining properties of the component is pretty simple, you just export a variable in the script tags. The templating language for if statements, and loops is sensible. Binding events is also pretty smooth. It has built in methods for defining dynamic CSS classes. I find it all just comes together rather naturally, and feels great to use. This all works very well with typescript.
 
@@ -67,7 +67,7 @@ let displayName;
 $: displayName = name.toUpperCase();
 ```
 
-They do document this example fairly well. I find it gets more complicated when you start using data defined in `+page.ts`. When you define `$:` for a block of code, which values is it watching for? Usually when a page hasn't re-rendered properly, adding the $: prefix around the necessary code block has fixed it. I just worry about re-rendering when it's not needed as well. I think this is just somethin I need more experience with, and need to better understand how it works.
+They do document this example fairly well. I find it gets more complicated when you start using data defined in `+page.ts`. When you define `$:` for a block of code, which values is it watching for? Usually when a page hasn't re-rendered properly, adding the $: prefix around the necessary code block has fixed it. I just worry about re-rendering when it's not needed as well. I think this is just something I need more experience with, and need to better understand how it works.
 
 ## Overall Impressions
 
